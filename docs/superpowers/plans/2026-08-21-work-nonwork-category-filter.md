@@ -1616,6 +1616,13 @@ Inside `fetchData`, extend the two `Promise.all` calls to four requests:
       ]);
       if (!statsRes.ok) throw new Error(`API error: ${statsRes.status}`);
       if (!dailyRes.ok) throw new Error(`API error: ${dailyRes.status}`);
+      // Guard the new pair too. A 500 from /api/projects returns { error } — an
+      // object, not an array — which would reach `projects.filter(...)` and throw
+      // during render, blanking the dashboard. A 500 from /api/config would set
+      // `config` undefined (unmounting SettingsPanel) and `unconfigured` undefined
+      // (rendering the filter as though configuration had succeeded).
+      if (!configRes.ok) throw new Error(`API error: ${configRes.status}`);
+      if (!projectsRes.ok) throw new Error(`API error: ${projectsRes.status}`);
       const [statsData, dailyData, configData, projectData] = await Promise.all([
         statsRes.json(), dailyRes.json(), configRes.json(), projectsRes.json(),
       ]);
