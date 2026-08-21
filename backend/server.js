@@ -165,6 +165,7 @@ function activeMsByDay(sortedTs) {
 }
 
 function parseClaudeData() {
+  const { config } = loadConfig();
   const sessionGroups = groupSessionsFromHistory(readHistory());
 
   const sessionTimes = getSessionTimes();
@@ -203,6 +204,7 @@ function parseClaudeData() {
     sessions.push({
       sessionId,
       project: projectName,
+      category: classifyProject(project, config),
       date,           // session start date (kept for reference)
       lastActiveDate, // most recent day with messages — used in the table Date column
       activeDates,
@@ -224,18 +226,37 @@ function parseClaudeData() {
 // Daily stats: correctly attribute every active minute to the local calendar day
 // it occurred in, splitting pairs that straddle midnight at the boundary.
 function parseDailyStats() {
+  const { config } = loadConfig();
   const sessionGroups = groupSessionsFromHistory(readHistory());
-  const byDay = {};
+  const byDay = {};      // date -> total ms
+  const byDayCat = {};   // date -> { work, nonWork, uncategorized } ms
 
-  for (const { timestamps } of Object.values(sessionGroups)) {
+  for (const { project, timestamps } of Object.values(sessionGroups)) {
+    const category = classifyProject(project, config);
+
+    // Attribute this session's gaps on their own map first, then fold into the
+    // totals — so the same attributeGap call produces both the overall figure
+    // and the per-category split, and they can never disagree.
+    const sessionByDay = {};
     for (let i = 1; i < timestamps.length; i++) {
-      attributeGap(byDay, timestamps[i - 1], timestamps[i]);
+      attributeGap(sessionByDay, timestamps[i - 1], timestamps[i]);
+    }
+
+    for (const [date, ms] of Object.entries(sessionByDay)) {
+      byDay[date] = (byDay[date] || 0) + ms;
+      if (!byDayCat[date]) byDayCat[date] = { work: 0, nonWork: 0, uncategorized: 0 };
+      byDayCat[date][category] += ms;
     }
   }
 
   return Object.entries(byDay).map(([date, ms]) => ({
     date,
     hours: parseFloat((ms / 3_600_000).toFixed(2)),
+    // Each rounded independently, so these three can differ from `hours` by up
+    // to 0.01h. The UI shows one at a time at 1dp, so it is never visible.
+    workHours: parseFloat((byDayCat[date].work / 3_600_000).toFixed(2)),
+    nonWorkHours: parseFloat((byDayCat[date].nonWork / 3_600_000).toFixed(2)),
+    uncategorizedHours: parseFloat((byDayCat[date].uncategorized / 3_600_000).toFixed(2)),
   }));
 }
 
