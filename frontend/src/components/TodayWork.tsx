@@ -19,11 +19,13 @@ export function TodayWork({ sessions }: Props) {
     );
   }
 
-  // Group by project, sum hours
+  // Group by project, summing only the hours worked TODAY. Using durationHours
+  // here would add a multi-day session's entire lifetime to today's total — a
+  // session that ran 5h yesterday and 10 min today would report 5.2h.
   const byProject: Record<string, { hours: number; sessions: Session[] }> = {};
   for (const s of todaySessions) {
     if (!byProject[s.project]) byProject[s.project] = { hours: 0, sessions: [] };
-    byProject[s.project].hours += s.durationHours;
+    byProject[s.project].hours += s.dailyActive?.[today] ?? 0;
     byProject[s.project].sessions.push(s);
   }
 

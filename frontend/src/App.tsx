@@ -5,34 +5,48 @@ import { TodayWork } from '@/components/TodayWork';
 import { HoursChart } from '@/components/HoursChart';
 import { SessionsTable } from '@/components/SessionsTable';
 import { Button } from '@/components/ui/button';
-import type { Session } from '@/lib/types';
+import type { Session, DayStats } from '@/lib/types';
 
 export default function App() {
   const [sessions, setSessions] = useState<Session[]>([]);
+  // Daily stats live here rather than inside HoursChart/TodayCards so both read
+  // the same payload and both get refreshed on the same timer.
+  const [dailyStats, setDailyStats] = useState<DayStats[]>([]);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [lastRefresh, setLastRefresh] = useState(new Date());
+  // Days selected in HoursChart — one from a click, several from a drag.
+  // Empty = no filter, show all sessions.
+  const [selectedDates, setSelectedDates] = useState<string[]>([]);
 
-  const fetchSessions = useCallback(async () => {
+  const fetchData = useCallback(async () => {
+    setRefreshing(true);
     try {
       setError(null);
-      const res = await fetch('/api/stats');
-      if (!res.ok) throw new Error(`API error: ${res.status}`);
-      const data = await res.json();
-      setSessions(data);
+      const [statsRes, dailyRes] = await Promise.all([
+        fetch('/api/stats'),
+        fetch('/api/daily-stats'),
+      ]);
+      if (!statsRes.ok) throw new Error(`API error: ${statsRes.status}`);
+      if (!dailyRes.ok) throw new Error(`API error: ${dailyRes.status}`);
+      const [statsData, dailyData] = await Promise.all([statsRes.json(), dailyRes.json()]);
+      setSessions(statsData);
+      setDailyStats(dailyData);
       setLastRefresh(new Date());
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to load');
     } finally {
       setLoading(false);
+      setRefreshing(false);
     }
   }, []);
 
   useEffect(() => {
-    fetchSessions();
-    const interval = setInterval(fetchSessions, 120_000);
+    fetchData();
+    const interval = setInterval(fetchData, 120_000);
     return () => clearInterval(interval);
-  }, [fetchSessions]);
+  }, [fetchData]);
 
   const handleStatusChange = async (sessionId: string, status: 'completed' | 'in-progress') => {
     const endpoint = status === 'completed' ? 'done' : 'reopen';
@@ -56,8 +70,8 @@ export default function App() {
           <span className="text-lg font-semibold">Claude Session Tracker</span>
           <div className="ml-auto flex items-center gap-3">
             <span className="text-sm text-muted-foreground">{today}</span>
-            <Button variant="outline" size="sm" onClick={fetchSessions} disabled={loading}>
-              <RefreshCw className={`h-4 w-4 mr-1 ${loading ? 'animate-spin' : ''}`} />
+            <Button variant="outline" size="sm" onClick={fetchData} disabled={refreshing}>
+              <RefreshCw className={`h-4 w-4 mr-1 ${refreshing ? 'animate-spin' : ''}`} />
               Refresh
             </Button>
           </div>
@@ -80,10 +94,21 @@ export default function App() {
           )}
         </div>
 
-        {!loading && <TodayCards sessions={sessions} />}
-        {!loading && <HoursChart />}
+        {!loading && <TodayCards sessions={sessions} dailyStats={dailyStats} />}
+        {!loading && (
+          <HoursChart
+            dailyStats={dailyStats}
+            selectedDates={selectedDates}
+            onSelectDates={setSelectedDates}
+          />
+        )}
         {!loading && sessions.length > 0 && (
-          <SessionsTable sessions={sessions} onStatusChange={handleStatusChange} />
+          <SessionsTable
+            sessions={sessions}
+            selectedDates={selectedDates}
+            onClearFilter={() => setSelectedDates([])}
+            onStatusChange={handleStatusChange}
+          />
         )}
 
         <div className="text-xs text-muted-foreground text-center pb-4">

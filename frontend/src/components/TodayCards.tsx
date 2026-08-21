@@ -1,30 +1,22 @@
-import { useEffect, useState } from 'react';
 import { Clock, FolderOpen, CheckCircle, Activity } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { localDateStr } from '@/lib/utils';
-import type { Session } from '@/lib/types';
+import type { Session, DayStats } from '@/lib/types';
 
 interface Props {
   sessions: Session[];
+  dailyStats: DayStats[];
 }
 
-export function TodayCards({ sessions }: Props) {
+export function TodayCards({ sessions, dailyStats }: Props) {
   const today = localDateStr();
 
   // Sessions that had any message activity today (not just sessions that started today)
   const todaySessions = sessions.filter(s => s.activeDates?.includes(today));
 
-  // Hours: fetch from daily-stats so it matches the bar chart exactly
-  const [todayHours, setTodayHours] = useState<number | null>(null);
-  useEffect(() => {
-    fetch('/api/daily-stats')
-      .then(r => r.json())
-      .then((data: { date: string; hours: number }[]) => {
-        const entry = data.find(d => d.date === localDateStr());
-        setTodayHours(entry?.hours ?? 0);
-      })
-      .catch(() => setTodayHours(null));
-  }, [today]);
+  // Hours come from daily-stats (via App, so they refresh on the same timer as
+  // everything else) — that's what keeps this card in step with the bar chart.
+  const todayHours = dailyStats.find(d => d.date === today)?.hours ?? 0;
 
   const uniqueProjects = new Set(todaySessions.map(s => s.project)).size;
   const completed = todaySessions.filter(s => s.status === 'completed').length;
@@ -37,7 +29,7 @@ export function TodayCards({ sessions }: Props) {
   const cards = [
     {
       title: 'Hours Today',
-      value: todayHours === null ? '…' : formatHours(todayHours),
+      value: formatHours(todayHours),
       description: `across ${todaySessions.length} session${todaySessions.length !== 1 ? 's' : ''}`,
       icon: Clock,
     },

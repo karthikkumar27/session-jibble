@@ -99,14 +99,25 @@ function readHistory() {
   }
 }
 
-// Compute total active ms from a sorted timestamp array, ignoring gaps > GAP_THRESHOLD
-function activeMs(sortedTs) {
-  let ms = 0;
-  for (let i = 1; i < sortedTs.length; i++) {
-    const gap = sortedTs[i] - sortedTs[i - 1];
-    if (gap < GAP_THRESHOLD) ms += gap;
+// Group history entries by session, with timestamps sorted ascending.
+// Shared by both endpoints so they always agree on session membership.
+function groupSessionsFromHistory(history) {
+  const groups = {};
+  for (const entry of history) {
+    if (!entry.sessionId) continue;
+    if (!groups[entry.sessionId]) {
+      groups[entry.sessionId] = {
+        project: entry.project || '',
+        timestamps: [],
+        firstDisplay: entry.display || ''
+      };
+    }
+    if (entry.timestamp) groups[entry.sessionId].timestamps.push(entry.timestamp);
   }
-  return ms;
+  for (const group of Object.values(groups)) {
+    group.timestamps.sort((a, b) => a - b);
+  }
+  return groups;
 }
 
 // Attribute active ms to byDay map, splitting correctly at local midnight boundaries.
@@ -138,21 +149,19 @@ function attributeGap(byDay, tsA, tsB) {
   }
 }
 
-function parseClaudeData() {
-  const history = readHistory();
-
-  const sessionGroups = {};
-  for (const entry of history) {
-    if (!entry.sessionId) continue;
-    if (!sessionGroups[entry.sessionId]) {
-      sessionGroups[entry.sessionId] = {
-        project: entry.project || '',
-        timestamps: [],
-        firstDisplay: entry.display || ''
-      };
-    }
-    if (entry.timestamp) sessionGroups[entry.sessionId].timestamps.push(entry.timestamp);
+// Active ms per local calendar day for ONE session's sorted timestamps.
+// Summing the values gives the session's total active time, so per-day and
+// total figures can never drift apart.
+function activeMsByDay(sortedTs) {
+  const byDay = {};
+  for (let i = 1; i < sortedTs.length; i++) {
+    attributeGap(byDay, sortedTs[i - 1], sortedTs[i]);
   }
+  return byDay;
+}
+
+function parseClaudeData() {
+  const sessionGroups = groupSessionsFromHistory(readHistory());
 
   const sessionTimes = getSessionTimes();
   const overrides = loadCompletionOverrides();
@@ -160,9 +169,16 @@ function parseClaudeData() {
 
   for (const [sessionId, group] of Object.entries(sessionGroups)) {
     const { project, timestamps, firstDisplay } = group;
-    timestamps.sort((a, b) => a - b);
 
-    const totalActiveMs = activeMs(timestamps);
+    // Per-day breakdown first; the session total is its sum. This is what lets
+    // the UI ask "how long was this session active on day X" without
+    // over-counting a multi-day session's other days.
+    const msByDay = activeMsByDay(timestamps);
+    const totalActiveMs = Object.values(msByDay).reduce((sum, ms) => sum + ms, 0);
+    const dailyActive = {};
+    for (const [day, ms] of Object.entries(msByDay)) {
+      dailyActive[day] = parseFloat((ms / 3_600_000).toFixed(2));
+    }
 
     const startMs = timestamps.length
       ? timestamps[0]
@@ -186,6 +202,7 @@ function parseClaudeData() {
       date,           // session start date (kept for reference)
       lastActiveDate, // most recent day with messages — used in the table Date column
       activeDates,
+      dailyActive,    // local date → active hours on that date (sums to durationHours)
       durationHours: parseFloat((totalActiveMs / 3_600_000).toFixed(2)),
       durationMinutes: Math.round(totalActiveMs / 60_000),
       status: overrides[sessionId]?.status || 'in-progress',
@@ -203,18 +220,10 @@ function parseClaudeData() {
 // Daily stats: correctly attribute every active minute to the local calendar day
 // it occurred in, splitting pairs that straddle midnight at the boundary.
 function parseDailyStats() {
-  const history = readHistory();
+  const sessionGroups = groupSessionsFromHistory(readHistory());
   const byDay = {};
 
-  const sessionGroups = {};
-  for (const entry of history) {
-    if (!entry.sessionId || !entry.timestamp) continue;
-    if (!sessionGroups[entry.sessionId]) sessionGroups[entry.sessionId] = [];
-    sessionGroups[entry.sessionId].push(entry.timestamp);
-  }
-
-  for (const timestamps of Object.values(sessionGroups)) {
-    timestamps.sort((a, b) => a - b);
+  for (const { timestamps } of Object.values(sessionGroups)) {
     for (let i = 1; i < timestamps.length; i++) {
       attributeGap(byDay, timestamps[i - 1], timestamps[i]);
     }
