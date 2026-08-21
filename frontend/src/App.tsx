@@ -52,6 +52,8 @@ export default function App() {
       ]);
       if (!statsRes.ok) throw new Error(`API error: ${statsRes.status}`);
       if (!dailyRes.ok) throw new Error(`API error: ${dailyRes.status}`);
+      if (!configRes.ok) throw new Error(`API error: ${configRes.status}`);
+      if (!projectsRes.ok) throw new Error(`API error: ${projectsRes.status}`);
       const [statsData, dailyData, configData, projectData] = await Promise.all([
         statsRes.json(), dailyRes.json(), configRes.json(), projectsRes.json(),
       ]);
