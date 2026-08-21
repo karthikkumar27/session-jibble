@@ -43,6 +43,9 @@ npm run backend
 
 # Frontend only (port 8088)
 npm run frontend
+
+# Backend unit tests (resolver + config validation)
+npm test --prefix backend
 ```
 
 Frontend is at **http://localhost:8088**.
@@ -57,6 +60,9 @@ Vite proxies `/api/*` → `http://localhost:8089` so the frontend always calls `
 | GET | `/api/daily-stats` | Hours per calendar day (all time) |
 | POST | `/api/sessions/:id/done` | Mark session completed |
 | POST | `/api/sessions/:id/reopen` | Reopen a session |
+| GET | `/api/config` | Category rules, with `source` and any load error |
+| PUT | `/api/config` | Validate and atomically save category rules |
+| GET | `/api/projects` | Distinct project folders with resolved category and all-time hours |
 
 ## Data sources (all from `~/.claude/`)
 
@@ -66,6 +72,7 @@ Vite proxies `/api/*` → `http://localhost:8089` so the frontend always calls `
 | `sessions/*.json` | Session metadata (`startedAt`, `updatedAt`) — fallback when no history entries exist |
 | `projects/<dir>/<sessionId>.jsonl` | Session transcripts — mined for `ai-title` entries used as session excerpts |
 | `session-stats.json` | Completion overrides written by this app (not a Claude file) |
+| `session-jibble.config.json` | Per-user work/non-work folder rules written by this app (not a Claude file) |
 
 ## Key design decisions
 
@@ -83,6 +90,17 @@ Sessions are sorted by `lastActivityAt` (most recent message timestamp), not `st
 
 ### Multi-day sessions
 A session that spans multiple days (e.g., started Tuesday, continued Wednesday) has an `activeDates: string[]` array. The frontend uses `activeDates.includes(today)` to correctly surface these in the "Today" view.
+
+### Category classification
+Project folders resolve to `work`, `nonWork`, or `uncategorized` via
+`backend/lib/categorize.js`. The most specific folder wins (longest matching path
+prefix), and path rules always outrank name-substring rules. Comparison is
+case-insensitive on Windows and macOS and case-sensitive on Linux, matching each
+platform's filesystem. Platform behaviour is injected, never read from
+`process.platform` inside the resolver, so both branches are testable from one machine.
+
+Unmatched folders become `uncategorized` rather than silently counting as non-work —
+a missing rule should be visible, not quietly under-report work hours.
 
 ## Frontend component details
 
@@ -114,5 +132,7 @@ Builds a 30-day window client-side by iterating back from today, then joins agai
 - **Do not use `toISOString()` for date labels** anywhere — breaks for UTC+N timezones.
 - **The active-time gap threshold is 30 minutes** — changing it affects all historical stats retroactively.
 - Backend reads `~/.claude/` directly with `fs` — no database, no migrations.
-- `session-stats.json` is the only file this app writes to disk.
+- This app writes two files to disk: `session-stats.json` (completion overrides) and `session-jibble.config.json` (category rules).
 - Frontend port is 8088, backend port is 8089 — these are hardcoded in `vite.config.ts` and `server.js`.
+- **TypeScript checking in `frontend/` requires `tsc -b`, not `tsc --noEmit`**: `tsconfig.json` is a solution config (`"files": []` plus `references`), so `tsc --noEmit` against it type-checks zero files and always exits 0. `tsconfig.app.json` carries `"ignoreDeprecations": "6.0"` because TypeScript 6 errors on the deprecated `baseUrl` option, which would abort `tsc -b` before compilation — fix this by running the build.
+- **Lint baseline is one pre-existing error**: `npx eslint .` from `frontend/` reports exactly one error (`react-hooks/set-state-in-effect` in `App.tsx`, from the data-fetch effect calling `fetchData()` synchronously). Treat that as the baseline — a change is clean when the count stays at one, not zero. Fixing it requires restructuring the fetch/refresh lifecycle, which nothing has needed yet.
