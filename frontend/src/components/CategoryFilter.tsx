@@ -15,9 +15,15 @@ export function CategoryFilter({ value, onChange, uncategorizedCount }: Props) {
   const options: CategoryFilterValue[] =
     uncategorizedCount > 0 ? [...BASE_OPTIONS, 'uncategorized'] : BASE_OPTIONS;
 
+  // The selected value can fall outside `options` — e.g. `value` is 'uncategorized'
+  // at the moment its count drops to zero and the segment stops rendering. Anchor
+  // the single tab stop to the first option in that case, so the group never
+  // becomes unreachable by keyboard.
+  const activeIndex = options.indexOf(value);
+  const tabStopIndex = activeIndex === -1 ? 0 : activeIndex;
+
   const move = (direction: 1 | -1) => {
-    const i = options.indexOf(value);
-    const from = i === -1 ? 0 : i;
+    const from = activeIndex === -1 ? 0 : activeIndex;
     onChange(options[(from + direction + options.length) % options.length]);
   };
 
@@ -31,8 +37,8 @@ export function CategoryFilter({ value, onChange, uncategorizedCount }: Props) {
         if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') { e.preventDefault(); move(-1); }
       }}
     >
-      {options.map(option => {
-        const active = option === value;
+      {options.map((option, index) => {
+        const active = index === activeIndex;
         return (
           <button
             key={option}
@@ -40,7 +46,7 @@ export function CategoryFilter({ value, onChange, uncategorizedCount }: Props) {
             role="radio"
             aria-checked={active}
             // Roving tabindex: one tab stop for the group, arrows move within it.
-            tabIndex={active ? 0 : -1}
+            tabIndex={index === tabStopIndex ? 0 : -1}
             onClick={() => onChange(option)}
             className={cn(
               'inline-flex items-center gap-1.5 rounded px-3 py-1 text-sm transition-colors',
