@@ -1067,7 +1067,7 @@ export { Sheet, SheetTrigger, SheetClose, SheetContent, SheetTitle, SheetDescrip
 Create `frontend/src/components/SettingsPanel.tsx`:
 
 ```tsx
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { Plus, Trash2, Check, AlertCircle } from 'lucide-react';
 import {
   Sheet, SheetContent, SheetTitle, SheetDescription,
@@ -1106,14 +1106,21 @@ export function SettingsPanel({ open, onOpenChange, config, projects, onSaved }:
   const [saveState, setSaveState] = useState<SaveState>('idle');
   const [serverErrors, setServerErrors] = useState<ConfigFieldError[]>([]);
 
-  // Re-seed the draft each time the panel opens, so a cancelled edit is discarded.
-  useEffect(() => {
+  // Re-seed the draft on each open transition, so a cancelled edit is discarded.
+  // Adjusting state during render rather than in an effect — the same pattern
+  // SessionsTable uses for its pagination reset. Keying on `open` alone, and not
+  // on `config`, is deliberate: a `config` prop update lands immediately after a
+  // successful save, and re-seeding on it would wipe the "Saved" confirmation
+  // this panel is required to show.
+  const [prevOpen, setPrevOpen] = useState(open);
+  if (open !== prevOpen) {
+    setPrevOpen(open);
     if (open) {
       setDraft(clone(config));
       setSaveState('idle');
       setServerErrors([]);
     }
-  }, [open, config]);
+  }
 
   const addEntry = (category: RuleCategory, field: RuleField, value: string) => {
     const trimmed = value.trim();
