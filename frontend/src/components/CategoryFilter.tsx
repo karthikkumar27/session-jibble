@@ -1,3 +1,4 @@
+import { useRef } from 'react';
 import { cn } from '@/lib/utils';
 import { CATEGORY_LABELS, type CategoryFilterValue } from '@/lib/types';
 
@@ -22,9 +23,15 @@ export function CategoryFilter({ value, onChange, uncategorizedCount }: Props) {
   const activeIndex = options.indexOf(value);
   const tabStopIndex = activeIndex === -1 ? 0 : activeIndex;
 
+  // Roving tabindex is only half the pattern — arrow keys must move DOM focus too,
+  // or a screen reader keeps announcing the segment the user just left.
+  const buttonRefs = useRef<(HTMLButtonElement | null)[]>([]);
+
   const move = (direction: 1 | -1) => {
     const from = activeIndex === -1 ? 0 : activeIndex;
-    onChange(options[(from + direction + options.length) % options.length]);
+    const next = (from + direction + options.length) % options.length;
+    onChange(options[next]);
+    buttonRefs.current[next]?.focus();
   };
 
   return (
@@ -45,6 +52,7 @@ export function CategoryFilter({ value, onChange, uncategorizedCount }: Props) {
             type="button"
             role="radio"
             aria-checked={active}
+            ref={el => { buttonRefs.current[index] = el; }}
             // Roving tabindex: one tab stop for the group, arrows move within it.
             tabIndex={index === tabStopIndex ? 0 : -1}
             onClick={() => onChange(option)}

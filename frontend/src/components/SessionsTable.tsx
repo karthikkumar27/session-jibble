@@ -152,7 +152,9 @@ export function SessionsTable({ sessions, selectedDates, category, onClearFilter
       <CardContent className="p-0">
         {displayRows.length === 0 ? (
           <div className="px-6 pb-6 text-sm text-muted-foreground">
-            No sessions were active on the selected {selectedDates.length === 1 ? 'day' : 'days'}.
+            {isFiltered
+              ? `No sessions were active on the selected ${selectedDates.length === 1 ? 'day' : 'days'}.`
+              : 'No sessions match this category.'}
           </div>
         ) : (
           <div className="overflow-x-auto">

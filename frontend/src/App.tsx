@@ -103,13 +103,14 @@ export default function App() {
 
   const uncategorizedCount = projects.filter(p => p.category === 'uncategorized').length;
 
-  // The Uncategorized segment disappears when its count hits zero — via the URL
-  // (?category=uncategorized with nothing uncategorized), or by assigning the last
-  // uncategorized folder in Settings. Without this reset the dashboard would keep
-  // filtering to a category that has no visible control: an empty chart with no
-  // segment highlighted and no way to tell why.
+  // Two dead-ends to rescue, both cases where the selected category has no visible
+  // control to change it. Unconfigured hides the filter entirely while `category` may
+  // still be 'work' from a shared ?category= link; and the Uncategorized segment stops
+  // rendering once its count hits zero.
   const effectiveCategory: CategoryFilterValue =
-    category === 'uncategorized' && uncategorizedCount === 0 ? 'all' : category;
+    unconfigured ? 'all'
+    : category === 'uncategorized' && uncategorizedCount === 0 ? 'all'
+    : category;
 
   const handleConfigSaved = (saved: CategoryConfig) => {
     setConfig(saved);
