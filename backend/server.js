@@ -237,10 +237,7 @@ function parseDailyStats() {
     // Attribute this session's gaps on their own map first, then fold into the
     // totals — so the same attributeGap call produces both the overall figure
     // and the per-category split, and they can never disagree.
-    const sessionByDay = {};
-    for (let i = 1; i < timestamps.length; i++) {
-      attributeGap(sessionByDay, timestamps[i - 1], timestamps[i]);
-    }
+    const sessionByDay = activeMsByDay(timestamps);
 
     for (const [date, ms] of Object.entries(sessionByDay)) {
       byDay[date] = (byDay[date] || 0) + ms;
