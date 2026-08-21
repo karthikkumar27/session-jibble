@@ -3,6 +3,10 @@ const fs = require('fs');
 const path = require('path');
 const cors = require('cors');
 const os = require('os');
+const { classifyProject } = require('./lib/categorize');
+const {
+  loadConfig, saveConfig, validateConfig, isUnconfigured,
+} = require('./lib/config');
 
 const app = express();
 app.use(cors());
@@ -269,6 +273,59 @@ app.post('/api/sessions/:sessionId/reopen', (req, res) => {
     overrides[req.params.sessionId] = { status: 'in-progress' };
     saveCompletionOverrides(overrides);
     res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/config', (req, res) => {
+  try {
+    const { config, source, error } = loadConfig();
+    res.json({ config, source, error, unconfigured: isUnconfigured(config) });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.put('/api/config', (req, res) => {
+  try {
+    const { config, errors } = validateConfig(req.body);
+    if (!config) return res.status(400).json({ errors });
+    saveConfig(config);
+    res.json({ config, source: 'file', error: null, unconfigured: isUnconfigured(config) });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Every distinct project folder in history with its resolved category. Powers the
+// Settings panel's Uncategorized list, so hours are all-time rather than the
+// chart's 30-day window — this list is for deciding how a folder should be filed.
+app.get('/api/projects', (req, res) => {
+  try {
+    const { config } = loadConfig();
+    const groups = groupSessionsFromHistory(readHistory());
+    const byPath = {};
+
+    for (const { project, timestamps } of Object.values(groups)) {
+      if (!project) continue;
+      if (!byPath[project]) byPath[project] = { ms: 0, sessions: 0 };
+      byPath[project].sessions += 1;
+      byPath[project].ms += Object.values(activeMsByDay(timestamps))
+        .reduce((sum, ms) => sum + ms, 0);
+    }
+
+    const home = os.homedir();
+    const rows = Object.entries(byPath).map(([projectPath, v]) => ({
+      path: projectPath,
+      displayPath: projectPath.startsWith(home) ? `~${projectPath.slice(home.length)}` : projectPath,
+      category: classifyProject(projectPath, config),
+      hours: parseFloat((v.ms / 3_600_000).toFixed(2)),
+      sessions: v.sessions,
+    }));
+
+    rows.sort((a, b) => b.hours - a.hours || a.path.localeCompare(b.path));
+    res.json(rows);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
