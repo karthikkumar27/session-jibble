@@ -975,7 +975,7 @@ export function CategoryFilter({ value, onChange, uncategorizedCount }: Props) {
 - [ ] **Step 3: Typecheck**
 
 Run: `cd frontend && npx tsc -b`
-Expected: errors ONLY in files not yet updated (`App.tsx`, `TodayCards.tsx`, `SessionsTable.tsx` will complain that `Session.category` / `DayStats.workHours` are missing from mock data or unused). `CategoryFilter.tsx` and `types.ts` themselves must be clean. Task 7 clears the rest.
+Expected: **either** a clean pass **or** errors confined to `App.tsx`, `TodayCards.tsx`, `SessionsTable.tsx`. Both outcomes are acceptable — session and day-stats objects arrive from `fetch().json()` as `any`, so new required interface fields may not surface any error at all. What matters: `types.ts` and `CategoryFilter.tsx` must have no errors of their own. **Do not edit App/TodayCards/SessionsTable to chase errors** — Task 7 owns those files.
 
 - [ ] **Step 4: Commit**
 
@@ -1392,7 +1392,7 @@ function RuleSection({ title, category, draft, onAdd, onRemove }: RuleSectionPro
 - [ ] **Step 4: Typecheck**
 
 Run: `cd frontend && npx tsc -b`
-Expected: `sheet.tsx` and `SettingsPanel.tsx` clean. Remaining errors only in `App.tsx` / `TodayCards.tsx` / `SessionsTable.tsx`, cleared by Task 7.
+Expected: `sheet.tsx` and `SettingsPanel.tsx` have no errors of their own. Any remaining errors must be confined to `App.tsx` / `TodayCards.tsx` / `SessionsTable.tsx`; a clean pass is equally fine. **Do not edit those three files** — Task 7 owns them.
 
 - [ ] **Step 5: Commit**
 
