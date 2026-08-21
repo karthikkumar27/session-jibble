@@ -1392,7 +1392,7 @@ function RuleSection({ title, category, draft, onAdd, onRemove }: RuleSectionPro
 - [ ] **Step 4: Typecheck**
 
 Run: `cd frontend && npx tsc -b`
-Expected: `sheet.tsx` and `SettingsPanel.tsx` have no errors of their own. Any remaining errors must be confined to `App.tsx` / `TodayCards.tsx` / `SessionsTable.tsx`; a clean pass is equally fine. **Do not edit those three files** — Task 7 owns them.
+Expected: exit 0, no output. This is a real typecheck — `tsconfig.app.json` was fixed before this task so that `tsc -b` actually compiles the sources instead of aborting on a config error. Any error naming `sheet.tsx` or `SettingsPanel.tsx` is yours to fix. **Do not edit `App.tsx` / `TodayCards.tsx` / `SessionsTable.tsx` / `HoursChart.tsx` / `exportJson.ts`** — Task 7 owns them.
 
 - [ ] **Step 5: Commit**
 
@@ -1726,8 +1726,19 @@ And render the panel just before the closing `</div>` of the outer wrapper:
 
 - [ ] **Step 6: Typecheck and lint**
 
-Run: `cd frontend && npx tsc -b && npx eslint .`
-Expected: both clean, zero errors.
+Run: `cd frontend && npx tsc -b`
+Expected: exit 0, no output.
+
+Then run: `cd frontend && npx eslint .`
+Expected: **exactly one** pre-existing error and nothing else —
+
+```
+src/App.tsx
+  46:5  error  Calling setState synchronously within an effect ...  react-hooks/set-state-in-effect
+✖ 1 problem (1 error, 0 warnings)
+```
+
+That error predates this feature (it is the original data-fetch effect calling `fetchData()`) and is **out of scope — do not fix it**, since doing so means restructuring the fetch/refresh lifecycle. The line number may shift as you edit `App.tsx`; what must not change is the count. **Any second error, or any error with a different rule name, is a failure of this task.**
 
 - [ ] **Step 7: Verify in the browser**
 
