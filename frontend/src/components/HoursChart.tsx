@@ -4,7 +4,8 @@ import {
 } from 'recharts';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { localDateStr } from '@/lib/utils';
-import type { DayStats } from '@/lib/types';
+import { CATEGORY_LABELS } from '@/lib/types';
+import type { DayStats, CategoryFilterValue } from '@/lib/types';
 
 interface DayPoint {
   date: string;
@@ -16,11 +17,26 @@ interface Props {
   dailyStats: DayStats[];
   selectedDates: string[];
   onSelectDates: (dates: string[]) => void;
+  category: CategoryFilterValue;
 }
 
+// All and Work keep the existing near-black primary; the other two are distinct
+// hues, each at least 4.5:1 against the card background.
 const BAR_FILL = 'hsl(222.2 47.4% 11.2%)';
+const FILL_BY_CATEGORY: Record<CategoryFilterValue, string> = {
+  all: BAR_FILL,
+  work: BAR_FILL,
+  nonWork: 'hsl(262 60% 48%)',
+  uncategorized: 'hsl(215 20% 45%)',
+};
+const FIELD_BY_CATEGORY: Record<CategoryFilterValue, keyof DayStats> = {
+  all: 'hours',
+  work: 'workHours',
+  nonWork: 'nonWorkHours',
+  uncategorized: 'uncategorizedHours',
+};
 
-export function HoursChart({ dailyStats, selectedDates, onSelectDates }: Props) {
+export function HoursChart({ dailyStats, selectedDates, onSelectDates, category }: Props) {
   // Column indices captured during a press/drag; null when idle.
   const [dragStart, setDragStart] = useState<number | null>(null);
   const [dragEnd, setDragEnd] = useState<number | null>(null);
@@ -29,8 +45,9 @@ export function HoursChart({ dailyStats, selectedDates, onSelectDates }: Props) 
   // Build a complete 30-day window client-side and join the API data onto it,
   // so days with no recorded activity still render (and stay selectable).
   const data = useMemo<DayPoint[]>(() => {
+    const field = FIELD_BY_CATEGORY[category];
     const byDate: Record<string, number> = {};
-    for (const r of dailyStats) byDate[r.date] = r.hours;
+    for (const r of dailyStats) byDate[r.date] = (r[field] as number) ?? 0;
 
     const days: DayPoint[] = [];
     for (let i = 29; i >= 0; i--) {
@@ -41,7 +58,7 @@ export function HoursChart({ dailyStats, selectedDates, onSelectDates }: Props) 
       days.push({ date, label, hours: parseFloat((byDate[date] ?? 0).toFixed(1)) });
     }
     return days;
-  }, [dailyStats]);
+  }, [dailyStats, category]);
 
   const dragLo = dragStart !== null && dragEnd !== null ? Math.min(dragStart, dragEnd) : null;
   const dragHi = dragStart !== null && dragEnd !== null ? Math.max(dragStart, dragEnd) : null;
@@ -121,7 +138,9 @@ export function HoursChart({ dailyStats, selectedDates, onSelectDates }: Props) 
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Hours per Day</CardTitle>
+        <CardTitle>
+          Hours per Day{category !== 'all' ? ` · ${CATEGORY_LABELS[category]}` : ''}
+        </CardTitle>
         <CardDescription>
           Active work time, last 30 days (idle gaps &gt;30 min excluded) · click a day, or drag
           across several, to filter the session list
@@ -176,7 +195,7 @@ export function HoursChart({ dailyStats, selectedDates, onSelectDates }: Props) 
                 x1={data[dragLo].label}
                 x2={data[dragHi].label}
                 strokeOpacity={0}
-                fill={BAR_FILL}
+                fill={FILL_BY_CATEGORY[category]}
                 fillOpacity={0.08}
               />
             )}
@@ -186,7 +205,7 @@ export function HoursChart({ dailyStats, selectedDates, onSelectDates }: Props) 
               {data.map(d => (
                 <Cell
                   key={d.date}
-                  fill={BAR_FILL}
+                  fill={FILL_BY_CATEGORY[category]}
                   // Dim everything outside the selection (or the live drag range)
                   fillOpacity={hasSelection && !highlighted.has(d.date) ? 0.2 : 1}
                 />

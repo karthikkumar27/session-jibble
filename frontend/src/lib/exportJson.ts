@@ -1,8 +1,9 @@
 import { localIsoString } from './utils';
-import type { SessionDay } from './types';
+import type { SessionDay, CategoryFilterValue } from './types';
 
 export interface ExportPayload {
   exportedAt: string;
+  category: CategoryFilterValue;
   selectedDates: string[];
   days: {
     date: string;
@@ -20,13 +21,18 @@ export interface ExportPayload {
 // Groups the filtered session-days by calendar day. Days that were selected but
 // hold no sessions are kept with an empty list, so the file reflects the range
 // the user actually picked rather than silently dropping the quiet days.
-export function buildExportPayload(selectedDates: string[], rows: SessionDay[]): ExportPayload {
+export function buildExportPayload(
+  selectedDates: string[],
+  rows: SessionDay[],
+  category: CategoryFilterValue
+): ExportPayload {
   const byDate = new Map<string, SessionDay[]>();
   for (const date of selectedDates) byDate.set(date, []);
   for (const row of rows) byDate.get(row.date)?.push(row);
 
   return {
     exportedAt: localIsoString(),
+    category,
     selectedDates: [...selectedDates],
     days: selectedDates.map(date => {
       const dayRows = byDate.get(date) ?? [];

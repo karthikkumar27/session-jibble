@@ -5,11 +5,12 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { localDateStr, formatDateLabel } from '@/lib/utils';
 import { buildExportPayload, downloadJson, exportFilename } from '@/lib/exportJson';
-import type { Session, SessionDay } from '@/lib/types';
+import type { Session, SessionDay, CategoryFilterValue } from '@/lib/types';
 
 interface Props {
   sessions: Session[];
   selectedDates: string[];
+  category: CategoryFilterValue;
   onClearFilter: () => void;
   onStatusChange: (sessionId: string, status: 'completed' | 'in-progress') => void;
 }
@@ -41,10 +42,17 @@ const formatDuration = (hours: number, minutes: number) => {
   return '<1m';
 };
 
-export function SessionsTable({ sessions, selectedDates, onClearFilter, onStatusChange }: Props) {
+export function SessionsTable({ sessions, selectedDates, category, onClearFilter, onStatusChange }: Props) {
   const [page, setPage] = useState(0);
   const today = localDateStr();
   const isFiltered = selectedDates.length > 0;
+
+  // Category narrows the pool first; the date filter then applies to what remains,
+  // so the two compose rather than fighting.
+  const scoped = useMemo(
+    () => (category === 'all' ? sessions : sessions.filter(s => s.category === category)),
+    [sessions, category]
+  );
 
   // One entry per (session, selected day) pair. Hours are that day's slice —
   // never summed across days, so a session spanning three selected days appears
@@ -53,7 +61,7 @@ export function SessionsTable({ sessions, selectedDates, onClearFilter, onStatus
     if (!isFiltered) return [];
     const wanted = new Set(selectedDates);
     const rows: SessionDay[] = [];
-    for (const session of sessions) {
+    for (const session of scoped) {
       for (const date of session.activeDates ?? []) {
         if (wanted.has(date)) {
           rows.push({ date, hours: session.dailyActive?.[date] ?? 0, session });
@@ -67,7 +75,7 @@ export function SessionsTable({ sessions, selectedDates, onClearFilter, onStatus
         a.session.project.localeCompare(b.session.project)
     );
     return rows;
-  }, [sessions, selectedDates, isFiltered]);
+  }, [scoped, selectedDates, isFiltered]);
 
   const displayRows = useMemo<DisplayRow[]>(() => {
     if (isFiltered) {
@@ -79,19 +87,19 @@ export function SessionsTable({ sessions, selectedDates, onClearFilter, onStatus
         session: r.session,
       }));
     }
-    return sessions.map(s => ({
+    return scoped.map(s => ({
       key: s.sessionId,
       date: s.lastActiveDate,
       hours: s.durationHours,
       minutes: s.durationMinutes,
       session: s,
     }));
-  }, [isFiltered, sessionDays, sessions]);
+  }, [isFiltered, sessionDays, scoped]);
 
   // Jump back to page 1 whenever the selection changes — otherwise filtering
   // while on page 3 leaves you deep in (or past the end of) the results.
   // Adjusting state during render rather than in an effect.
-  const selectionKey = selectedDates.join(',');
+  const selectionKey = `${category}|${selectedDates.join(',')}`;
   const [prevSelectionKey, setPrevSelectionKey] = useState(selectionKey);
   if (prevSelectionKey !== selectionKey) {
     setPrevSelectionKey(selectionKey);
@@ -113,10 +121,10 @@ export function SessionsTable({ sessions, selectedDates, onClearFilter, onStatus
 
   const description = isFiltered
     ? `${sessionDays.length} session-day${sessionDays.length === 1 ? '' : 's'} across ${selectedDates.length} day${selectedDates.length === 1 ? '' : 's'} · each row shows that day's hours only`
-    : `${sessions.length} sessions total · sorted by most recent activity`;
+    : `${scoped.length} sessions total · sorted by most recent activity`;
 
   const handleExport = () => {
-    downloadJson(buildExportPayload(selectedDates, sessionDays), exportFilename(selectedDates));
+    downloadJson(buildExportPayload(selectedDates, sessionDays, category), exportFilename(selectedDates));
   };
 
   return (
