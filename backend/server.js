@@ -9,7 +9,15 @@ const {
 } = require('./lib/config');
 
 const app = express();
-app.use(cors());
+
+// This API is unauthenticated and serves the user's entire session history along
+// with absolute project paths — which disclose their username, home layout, and
+// every client and repo name. A wildcard origin would let any page they happen to
+// be browsing read all of that, and drive the write endpoints too. Requests that
+// arrive through Vite's /api proxy are same-origin and unaffected; this only
+// governs pages talking to :8089 directly.
+const ALLOWED_ORIGINS = ['http://localhost:8088', 'http://127.0.0.1:8088'];
+app.use(cors({ origin: ALLOWED_ORIGINS }));
 app.use(express.json());
 
 const CLAUDE_DIR = path.join(os.homedir(), '.claude');
@@ -350,4 +358,8 @@ app.get('/api/projects', (req, res) => {
 });
 
 const PORT = 8089;
-app.listen(PORT, () => console.log(`Claude stats backend running on :${PORT}`));
+// Bind loopback only. Without an explicit host Express listens on every interface,
+// so anyone on the same network (a cafe, a shared office WiFi) could read this
+// machine's session history unauthenticated.
+const HOST = '127.0.0.1';
+app.listen(PORT, HOST, () => console.log(`Claude stats backend running on ${HOST}:${PORT}`));
