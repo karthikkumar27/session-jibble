@@ -1637,12 +1637,29 @@ Add above the `return`:
 ```tsx
   const uncategorizedCount = projects.filter(p => p.category === 'uncategorized').length;
 
+  // The Uncategorized segment disappears when its count hits zero — via the URL
+  // (?category=uncategorized with nothing uncategorized), or by assigning the last
+  // uncategorized folder in Settings. Without this reset the dashboard would keep
+  // filtering to a category that has no visible control: an empty chart with no
+  // segment highlighted and no way to tell why.
+  const effectiveCategory: CategoryFilterValue =
+    category === 'uncategorized' && uncategorizedCount === 0 ? 'all' : category;
+
   const handleConfigSaved = (saved: CategoryConfig) => {
     setConfig(saved);
     setUnconfigured(false);
     fetchData();
   };
 ```
+
+Use `effectiveCategory` — not `category` — everywhere it is passed downward: the
+`CategoryFilter`'s `value`, and the `category` prop on `TodayCards`, `HoursChart`, and
+`SessionsTable`. The URL-sync effect keeps reading `category`, so a shared link stays
+intact until the user picks something else.
+
+Deriving this during render rather than calling `setCategory` from an effect is
+deliberate: the project's eslint config flags `react-hooks/set-state-in-effect`, and a
+state write here would add a second violation to the one pre-existing error.
 
 In the header, replace the contents of the `ml-auto` div with:
 
