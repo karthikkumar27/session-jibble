@@ -195,3 +195,79 @@ test('ingest stores only the fields the duration engine needs', () => {
   assert.deepEqual(Object.keys(JSON.parse(line)).sort(),
     ['cwd', 'gitBranch', 'sessionId', 'ts', 'type', 'uuid']);
 });
+
+test('F1: unclassified events are re-read after they classify', () => {
+  const root = tmpdir('projects');
+  const file = project(root, '-Users-dev-a', 'unknown.jsonl', row({ entrypoint: undefined }));
+  const ledgerDir = tmpdir('ledger');
+
+  // First run: unclassified event is skipped, file not added to state
+  const first = ingest(createLedger(ledgerDir), root);
+  assert.equal(first.eventsAppended, 0);
+  assert.equal(createLedger(ledgerDir).readState().files[file], undefined);
+
+  // Append a cli event
+  fs.appendFileSync(file, row());
+
+  // Second run: earlier unclassified event is re-read and ingested
+  const second = ingest(createLedger(ledgerDir), root);
+  assert.equal(second.eventsAppended, 2);
+  assert.equal(createLedger(ledgerDir).load(), 2);
+});
+
+test('F2: invalid UTF-8 before final newline yields correct nextOffset', () => {
+  const dir = tmpdir('tail');
+  const file = path.join(dir, 't.jsonl');
+  // Write a line, then append invalid UTF-8 bytes before the newline
+  const validLine = 'valid\n';
+  const invalidBytes = Buffer.concat([
+    Buffer.from('partial'),
+    Buffer.from([0xFF, 0xFE]), // invalid UTF-8
+    Buffer.from('\n'),
+  ]);
+  fs.writeFileSync(file, Buffer.concat([
+    Buffer.from(validLine),
+    invalidBytes,
+  ]));
+
+  const first = readTail(file, 0);
+  // Should get the valid line and the partial (even though invalid UTF-8)
+  assert.equal(first.lines.length, 2);
+  // nextOffset should point exactly to the byte after the second newline
+  const fileSize = fs.statSync(file).size;
+  assert.equal(first.nextOffset, fileSize);
+
+  // Appending to that offset should work correctly
+  fs.appendFileSync(file, 'next\n');
+  const second = readTail(file, first.nextOffset);
+  assert.deepEqual(second.lines, ['next']);
+});
+
+test('F3: second ingest over sdk file skips without parsing', () => {
+  const root = tmpdir('projects');
+  const file = project(root, '-Users-dev-a', 'sdk.jsonl', row({ entrypoint: 'sdk-py' }));
+  const ledgerDir = tmpdir('ledger');
+
+  // First ingest: marks file as sdk-py
+  ingest(createLedger(ledgerDir), root);
+
+  // Append more data
+  fs.appendFileSync(file, row({ entrypoint: 'sdk-py' }));
+
+  // Second ingest: should skip parsing and just update offset
+  const summary = ingest(createLedger(ledgerDir), root);
+  assert.equal(summary.eventsAppended, 0);
+  assert.equal(summary.skippedNonBillable, 1);
+  assert.equal(createLedger(ledgerDir).readState().files[file].offset, fs.statSync(file).size);
+});
+
+test('F4: errors counter increments on file stat failures', () => {
+  const root = tmpdir('projects');
+  project(root, '-Users-dev-a', 'cli.jsonl', row());
+  const ledgerDir = tmpdir('ledger');
+
+  // Try to ingest from a non-existent directory
+  const summary = ingest(createLedger(ledgerDir), '/nonexistent/path');
+  assert.equal(summary.errors, 1);
+  assert.equal(summary.filesScanned, 0);
+});

@@ -15,32 +15,31 @@ function readTail(filePath, fromByte) {
   if (size <= start) return { lines: [], nextOffset: start };
 
   const fd = fs.openSync(filePath, 'r');
-  let text;
+  let bytesRead;
   try {
     const buf = Buffer.alloc(size - start);
-    fs.readSync(fd, buf, 0, buf.length, start);
-    text = buf.toString('utf8');
+    bytesRead = fs.readSync(fd, buf, 0, buf.length, start);
+    const i = buf.lastIndexOf(0x0A, bytesRead - 1);
+    if (i === -1) return { lines: [], nextOffset: start };
+
+    const complete = buf.subarray(0, i).toString('utf8');
+    return {
+      lines: complete.split('\n').filter(line => line.trim()),
+      nextOffset: start + i + 1,
+    };
   } finally {
     fs.closeSync(fd);
   }
-
-  const lastNewline = text.lastIndexOf('\n');
-  if (lastNewline === -1) return { lines: [], nextOffset: start };
-
-  const complete = text.slice(0, lastNewline);
-  return {
-    lines: complete.split('\n').filter(line => line.trim()),
-    nextOffset: start + Buffer.byteLength(complete, 'utf8') + 1,
-  };
 }
 
 // ~/.claude/projects/<mangled-cwd>/<sessionId>.jsonl — exactly one level deep.
-function listTranscripts(projectsDir = DEFAULT_PROJECTS_DIR) {
+function listTranscripts(projectsDir = DEFAULT_PROJECTS_DIR, onError) {
   const out = [];
   let entries;
   try {
     entries = fs.readdirSync(projectsDir, { withFileTypes: true });
-  } catch {
+  } catch (e) {
+    if (onError) onError();
     return out;
   }
   for (const entry of entries) {
@@ -49,7 +48,8 @@ function listTranscripts(projectsDir = DEFAULT_PROJECTS_DIR) {
     let files;
     try {
       files = fs.readdirSync(dir);
-    } catch {
+    } catch (e) {
+      if (onError) onError();
       continue;
     }
     for (const file of files) {
@@ -64,12 +64,13 @@ function ingest(ledger, projectsDir = DEFAULT_PROJECTS_DIR) {
   const files = state.files;
   const summary = {
     filesScanned: 0, filesChanged: 0, eventsAppended: 0,
-    skippedNonBillable: 0, byEntrypoint: {},
+    skippedNonBillable: 0, errors: 0, byEntrypoint: {},
   };
 
   const count = (key) => { summary.byEntrypoint[key] = (summary.byEntrypoint[key] || 0) + 1; };
+  const onError = () => { summary.errors += 1; };
 
-  for (const filePath of listTranscripts(projectsDir)) {
+  for (const filePath of listTranscripts(projectsDir, onError)) {
     summary.filesScanned += 1;
     const prev = files[filePath] || { offset: 0, entrypoint: null };
 
@@ -77,7 +78,8 @@ function ingest(ledger, projectsDir = DEFAULT_PROJECTS_DIR) {
     try {
       size = fs.statSync(filePath).size;
     } catch {
-      continue;                       // deleted mid-scan
+      onError();                       // deleted mid-scan
+      continue;
     }
 
     // Once a file is known non-billable, skip parsing it forever and just keep
@@ -97,6 +99,7 @@ function ingest(ledger, projectsDir = DEFAULT_PROJECTS_DIR) {
     try {
       tail = readTail(filePath, prev.offset);
     } catch {
+      onError();
       continue;
     }
     if (!tail.lines.length) {
@@ -131,8 +134,12 @@ function ingest(ledger, projectsDir = DEFAULT_PROJECTS_DIR) {
       summary.skippedNonBillable += 1;
     }
 
-    files[filePath] = { offset: tail.nextOffset, entrypoint };
-    summary.filesChanged += 1;
+    // Only update offset if entrypoint is known; otherwise leave it unchanged
+    // so the file re-reads until it classifies.
+    if (entrypoint) {
+      files[filePath] = { offset: tail.nextOffset, entrypoint };
+      summary.filesChanged += 1;
+    }
   }
 
   ledger.writeState(state);
