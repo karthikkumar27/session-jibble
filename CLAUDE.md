@@ -73,6 +73,8 @@ Vite proxies `/api/*` → `http://localhost:8089` so the frontend always calls `
 | `projects/<dir>/<sessionId>.jsonl` | Session transcripts — mined for `ai-title` entries used as session excerpts |
 | `session-stats.json` | Completion overrides written by this app (not a Claude file) |
 | `session-jibble.config.json` | Per-user work/non-work folder rules written by this app (not a Claude file) |
+| `session-jibble/events.jsonl` | Our durable copy of interactive transcript events (not a Claude file) |
+| `session-jibble/ingest-state.json` | Per-transcript byte offsets so ingest reads only new data |
 
 ## Key design decisions
 
@@ -101,6 +103,21 @@ platform's filesystem. Platform behaviour is injected, never read from
 
 Unmatched folders become `uncategorized` rather than silently counting as non-work —
 a missing rule should be visible, not quietly under-report work hours.
+
+### Transcript ingestion (time-critical)
+`~/.claude/projects/**/*.jsonl` holds message-level timestamps far richer than
+`history.jsonl`, but Claude Code deletes them after ~30 days. `npm run ingest`
+copies interactive (`entrypoint === 'cli'`) events into
+`~/.claude/session-jibble/events.jsonl` before they expire. It is incremental
+(byte offsets in `ingest-state.json`) and idempotent (dedupe by event `uuid`),
+so running it often is free and running it twice is harmless.
+
+It stores **raw events, never computed durations** — duration rules will change,
+and intervals can always be recomputed from events, while events cannot be
+recovered once deleted.
+
+`sdk-cli` and `sdk-py` transcripts are excluded: those are unattended agent runs,
+not human work.
 
 ## Frontend component details
 
