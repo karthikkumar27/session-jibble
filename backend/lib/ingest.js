@@ -1,7 +1,10 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { parseEvent, fileEntrypoint, isBillable } = require('./transcript');
+const {
+  parseEvent, fileEntrypoint, hasInteractiveMarkers, isBillable,
+  INFERRED_INTERACTIVE, MALFORMED,
+} = require('./transcript');
 
 const DEFAULT_PROJECTS_DIR = path.join(os.homedir(), '.claude', 'projects');
 
@@ -15,10 +18,14 @@ function readTail(filePath, fromByte) {
   if (size <= start) return { lines: [], nextOffset: start };
 
   const fd = fs.openSync(filePath, 'r');
-  let bytesRead;
   try {
     const buf = Buffer.alloc(size - start);
-    bytesRead = fs.readSync(fd, buf, 0, buf.length, start);
+    const bytesRead = fs.readSync(fd, buf, 0, buf.length, start);
+    // A short read must not fall through: lastIndexOf(0x0A, -1) searches from
+    // the end of the buffer, which Buffer.alloc has zero-filled, so it would
+    // return an index into bytes we never read.
+    if (bytesRead <= 0) return { lines: [], nextOffset: start };
+
     const i = buf.lastIndexOf(0x0A, bytesRead - 1);
     if (i === -1) return { lines: [], nextOffset: start };
 
@@ -59,14 +66,29 @@ function listTranscripts(projectsDir = DEFAULT_PROJECTS_DIR, onError) {
   return out.sort();
 }
 
+// A stated entrypoint always wins over an inferred one — including over an
+// inference this ingest cached earlier. A later tail may be the first chunk of
+// the file to state sdk-cli / sdk-py, and that must exclude the file for good.
+function statedCache(cached) {
+  return cached === INFERRED_INTERACTIVE ? null : cached;
+}
+
 function ingest(ledger, projectsDir = DEFAULT_PROJECTS_DIR) {
   const state = ledger.readState();
   const files = state.files;
   const summary = {
-    filesScanned: 0, filesChanged: 0, eventsAppended: 0,
-    skippedNonBillable: 0, errors: 0, byEntrypoint: {},
+    filesScanned: 0,
+    filesChanged: 0,
+    eventsAppended: 0,          // EVENTS, not files
+    filesExcludedSdk: 0,        // FILES that state sdk-cli / sdk-py
+    filesUnclassified: 0,       // FILES with no entrypoint and no human signal
+    errors: 0,
+    byEntrypoint: {},           // FILES per classification; sums to filesScanned
   };
 
+  // Every scanned file lands in exactly one bucket, so byEntrypoint reconciles
+  // with filesScanned. A bucket that silently swallows files is how an
+  // incomplete capture reads as a complete one.
   const count = (key) => { summary.byEntrypoint[key] = (summary.byEntrypoint[key] || 0) + 1; };
   const onError = () => { summary.errors += 1; };
 
@@ -79,15 +101,16 @@ function ingest(ledger, projectsDir = DEFAULT_PROJECTS_DIR) {
       size = fs.statSync(filePath).size;
     } catch {
       onError();                       // deleted mid-scan
+      count('unreadable');
       continue;
     }
 
     // Once a file is known non-billable, skip parsing it forever and just keep
-    // its offset current. 1,457 of 1,560 local transcripts are SDK runs, so
-    // this is where nearly all the scan cost would otherwise go.
+    // its offset current. The overwhelming majority of local transcripts are
+    // SDK runs, so this is where nearly all the scan cost would otherwise go.
     if (prev.entrypoint && !isBillable(prev.entrypoint)) {
       count(prev.entrypoint);
-      summary.skippedNonBillable += 1;
+      summary.filesExcludedSdk += 1;
       if (size !== prev.offset) {
         files[filePath] = { offset: size, entrypoint: prev.entrypoint };
         summary.filesChanged += 1;
@@ -100,38 +123,61 @@ function ingest(ledger, projectsDir = DEFAULT_PROJECTS_DIR) {
       tail = readTail(filePath, prev.offset);
     } catch {
       onError();
+      count('unreadable');
       continue;
     }
     if (!tail.lines.length) {
-      if (prev.entrypoint) count(prev.entrypoint);
+      // A zero-byte or not-yet-flushed file still has to be accounted for.
+      const known = prev.entrypoint;
+      count(known || 'unknown');
+      if (!known) summary.filesUnclassified += 1;
       continue;
     }
+
+    // Scans RAW lines: entrypoint lives on system / attachment / mode rows as
+    // well, and some transcripts state it on nothing else.
+    const stated = fileEntrypoint(tail.lines) || statedCache(prev.entrypoint);
+
+    // No entrypoint anywhere, but a human was clearly driving. Under the old
+    // rule these files were dropped as "non-interactive" and re-read forever
+    // until the transcript expired, taking the evidence with it.
+    const inferred = stated
+      ? null
+      : (hasInteractiveMarkers(tail.lines) || prev.entrypoint === INFERRED_INTERACTIVE
+        ? INFERRED_INTERACTIVE
+        : null);
+
+    const entrypoint = stated || inferred;
+    count(entrypoint || 'unknown');
 
     const events = [];
     for (const line of tail.lines) {
       const event = parseEvent(line);
+      // A corrupt line looks exactly like an ai-title row once it is dropped,
+      // and the offset then advances past it forever. Count it so an operator
+      // sees that this capture is incomplete.
+      if (event === MALFORMED) { onError(); continue; }
       if (event) events.push(event);
     }
 
-    // A file's entrypoint is fixed, so a cached value wins — later appended
-    // rows may omit the field entirely.
-    const entrypoint = prev.entrypoint || fileEntrypoint(events);
-    count(entrypoint || 'unknown');
-
     if (isBillable(entrypoint)) {
-      // Sidechain rows are subagent chatter inside the session; the parent
-      // session's own rows already cover that wall-clock time.
-      const billable = events.filter(event => !event.isSidechain);
-      summary.eventsAppended += ledger.append(billable.map(event => ({
+      // Sidechain rows are stored too, tagged. Whether subagent chatter counts
+      // toward a duration is a question for the duration engine; deciding it
+      // here would destroy evidence that cannot be recovered once Claude Code
+      // deletes the transcript.
+      summary.eventsAppended += ledger.append(events.map(event => ({
         uuid: event.uuid,
         sessionId: event.sessionId,
         ts: event.ts,
         type: event.type,
         cwd: event.cwd,
         gitBranch: event.gitBranch,
+        isSidechain: event.isSidechain,
       })));
+    } else if (entrypoint) {
+      summary.filesExcludedSdk += 1;
     } else {
-      summary.skippedNonBillable += 1;
+      summary.filesUnclassified += 1;
     }
 
     // Only update offset if entrypoint is known; otherwise leave it unchanged

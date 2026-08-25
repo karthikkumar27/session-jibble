@@ -22,7 +22,13 @@ function createLedger(dir = DEFAULT_DIR) {
     let text = '';
     try {
       text = fs.readFileSync(eventsPath, 'utf8');
-    } catch {
+    } catch (err) {
+      // ONLY "no ledger yet" may be treated as an empty ledger. Any other
+      // failure (EACCES, EISDIR, ERR_STRING_TOO_LONG once the file outgrows
+      // Node's max string length) means the events ARE there but we cannot see
+      // them — and a silent seen={} would make the next append rewrite every
+      // one of them as fresh, doubling billed hours.
+      if (err.code !== 'ENOENT') throw err;
       text = '';
     }
     for (const line of text.split('\n')) {
@@ -39,8 +45,11 @@ function createLedger(dir = DEFAULT_DIR) {
     return seen.size;
   }
 
-  // Idempotent by uuid, so a crash mid-run, a re-scan, or a full rebuild can
-  // never write the same event twice and inflate billed hours.
+  // Idempotent by uuid WITHIN A PROCESS: `seen` is per-process, so a crash
+  // mid-run, a re-scan or a full rebuild never write the same event twice.
+  // Two ingest runs overlapping in time would each load the same snapshot and
+  // each append the same uuids, so concurrency is excluded one level up by the
+  // lockfile in lib/lock.js — this function cannot do it alone.
   function append(events) {
     if (!loaded) load();
     const fresh = [];
@@ -79,11 +88,16 @@ function createLedger(dir = DEFAULT_DIR) {
     fs.renameSync(tmp, statePath);
   }
 
+  // has()/size() lazy-load exactly like append(): a consumer that only reads
+  // (the duration engine) would otherwise see an empty ledger and report zero
+  // hours from a full store.
+  const ensureLoaded = () => { if (!loaded) load(); };
+
   return {
     dir, eventsPath, statePath,
     load, append, readState, writeState,
-    has: uuid => seen.has(uuid),
-    size: () => seen.size,
+    has: (uuid) => { ensureLoaded(); return seen.has(uuid); },
+    size: () => { ensureLoaded(); return seen.size; },
   };
 }
 

@@ -75,6 +75,7 @@ Vite proxies `/api/*` → `http://localhost:8089` so the frontend always calls `
 | `session-jibble.config.json` | Per-user work/non-work folder rules written by this app (not a Claude file) |
 | `session-jibble/events.jsonl` | Our durable copy of interactive transcript events (not a Claude file) |
 | `session-jibble/ingest-state.json` | Per-transcript byte offsets so ingest reads only new data |
+| `session-jibble/ingest.lock` | Exclusive lock so two ingest runs cannot both append |
 
 ## Key design decisions
 
@@ -107,21 +108,55 @@ a missing rule should be visible, not quietly under-report work hours.
 ### Transcript ingestion (time-critical)
 `~/.claude/projects/**/*.jsonl` holds message-level timestamps far richer than
 `history.jsonl`, but Claude Code deletes them after ~30 days. `npm run ingest`
-copies interactive (`entrypoint === 'cli'`) events into
-`~/.claude/session-jibble/events.jsonl` before they expire. It is incremental
-(byte offsets in `ingest-state.json`) and idempotent (dedupe by event `uuid`),
-so running it often is free and running it twice is harmless.
+copies interactive events into `~/.claude/session-jibble/events.jsonl` before they
+expire. It is incremental (byte offsets in `ingest-state.json`) and idempotent
+(dedupe by event `uuid`), so running it often is free and running it twice is
+harmless.
 
 It stores **raw events, never computed durations** — duration rules will change,
 and intervals can always be recomputed from events, while events cannot be
-recovered once deleted.
+recovered once deleted. Sidechain (subagent) rows are stored too, tagged
+`isSidechain`; whether they count toward a duration is the duration engine's
+decision, not capture's.
 
-`sdk-cli` and `sdk-py` transcripts are excluded: those are unattended agent runs,
-not human work.
+#### How a transcript is classified
+Billability is decided per file, in this order:
+
+1. **A stated `entrypoint` wins.** `fileEntrypoint()` scans the file's **raw
+   lines**, not only its `user`/`assistant` rows — the field also appears on
+   `system`, `attachment` and `mode` rows, and some transcripts state it on
+   nothing else. `cli` is billable; `sdk-cli` and `sdk-py` are excluded as
+   unattended agent runs. A stated value always beats an inferred one, including
+   one this ingest cached earlier.
+2. **No `entrypoint` anywhere → look for a human.** `hasInteractiveMarkers()`
+   treats a `userType: "external"` non-sidechain row, or a `last-prompt` /
+   `permission-mode` row, as proof someone was at the keyboard, and classifies
+   the file `interactive` (billable). These markers appear in SDK transcripts
+   too, so this rule is only ever consulted when step 1 found nothing.
+3. **Neither → `unknown`.** The file is not captured and its offset is left
+   unchanged so it re-reads until it classifies. The run reports these
+   separately from SDK exclusions, because an unclassified file means capture
+   may be incomplete while an SDK one does not.
+
+Do not collapse steps 1 and 3 back into "only `entrypoint === 'cli'` counts" —
+that dropped real human work in billable repos and reported it as
+"non-interactive".
+
+#### Concurrency
+The `SessionStart` hook is global, so two runs overlapping is routine. The
+ledger's dedupe set is per-process and cannot prevent two runs appending the
+same uuids, so `bin/ingest.js` takes an `O_EXCL` lockfile
+(`~/.claude/session-jibble/ingest.lock`, `lib/lock.js`) first and **exits 0**
+when it is held — the next session start captures anything this run skipped. A
+lock whose pid is dead, or that is older than five minutes, is reclaimed.
 
 Ingest is wired to a global `SessionStart` hook in `~/.claude/settings.json` (global,
 not project — the work being captured spans every repo, not just this one). It runs
 `async` and logs to `~/.claude/session-jibble/ingest.log`. Review it with `/hooks`.
+
+**Never truncate or delete `events.jsonl`** — it is the durable copy that outlives
+the transcripts, and nothing can rebuild it once they expire. To force a full
+re-read, delete `ingest-state.json` only; uuid dedupe makes that purely additive.
 
 ## Frontend component details
 

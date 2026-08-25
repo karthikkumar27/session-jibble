@@ -5,6 +5,9 @@ const os = require('node:os');
 const path = require('node:path');
 const { createLedger } = require('../lib/ledger');
 
+// root bypasses file permissions, so the write-only case cannot be staged there.
+const isRoot = () => typeof process.getuid === 'function' && process.getuid() === 0;
+
 const tmpdir = () => fs.mkdtempSync(path.join(os.tmpdir(), 'jibble-ledger-'));
 const ev = (uuid, over = {}) => ({
   uuid, sessionId: 's1', ts: 1_000, type: 'user',
@@ -84,4 +87,45 @@ test('writeState leaves no temp file behind', () => {
   const led = createLedger(dir);
   led.writeState({ version: 1, files: {} });
   assert.equal(fs.existsSync(led.statePath + '.tmp'), false);
+});
+
+// I1: swallowing every read error made an unreadable-but-present events.jsonl
+// look empty, so the next append would rewrite all of it as fresh events.
+test('I1: load rethrows a read error that is not "no ledger yet"', () => {
+  const dir = tmpdir();
+  fs.mkdirSync(path.join(dir, 'events.jsonl'), { recursive: true });   // EISDIR
+  assert.throws(() => createLedger(dir).load(), (err) => err.code !== 'ENOENT');
+});
+
+test('I1: a missing ledger is still an empty ledger, not an error', () => {
+  const led = createLedger(tmpdir());
+  assert.equal(led.load(), 0);
+});
+
+// The dangerous shape: the ledger can still be APPENDED to but not read. The
+// old code produced seen={} and happily re-wrote events that were already there.
+test('I1: append refuses to re-write a ledger it could not read', { skip: isRoot() }, () => {
+  const dir = tmpdir();
+  const led = createLedger(dir);
+  led.append([ev('a'), ev('b')]);
+
+  fs.chmodSync(led.eventsPath, 0o222);            // write-only: reads fail, appends do not
+  try {
+    assert.throws(() => createLedger(dir).append([ev('a')]));
+  } finally {
+    fs.chmodSync(led.eventsPath, 0o644);
+  }
+  const lines = fs.readFileSync(led.eventsPath, 'utf8').split('\n').filter(Boolean);
+  assert.equal(lines.length, 2, 'the duplicate append must not have happened');
+});
+
+// has()/size() used to read the un-loaded set, so a consumer that only reads
+// (the duration engine) saw an empty ledger and would report zero hours.
+test('has() and size() lazy-load like append() does', () => {
+  const dir = tmpdir();
+  createLedger(dir).append([ev('a'), ev('b')]);
+
+  assert.equal(createLedger(dir).size(), 2);
+  assert.equal(createLedger(dir).has('a'), true);
+  assert.equal(createLedger(dir).has('zzz'), false);
 });

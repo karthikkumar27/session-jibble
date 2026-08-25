@@ -106,24 +106,33 @@ test('ingest stores cli events and skips sdk runs entirely', () => {
   const summary = ingest(led, root);
 
   assert.equal(summary.eventsAppended, 2);
-  assert.equal(summary.skippedNonBillable, 1);
+  assert.equal(summary.filesExcludedSdk, 1);
   assert.equal(led.size(), 2);
 });
 
-test('ingest excludes files that state no entrypoint rather than guessing', () => {
+test('ingest excludes files with no entrypoint AND no sign of a human', () => {
   const root = tmpdir('projects');
-  project(root, '-Users-dev-a', 'unknown.jsonl', row({ entrypoint: undefined }));
+  project(root, '-Users-dev-a', 'unknown.jsonl', row({ entrypoint: undefined, userType: undefined }));
 
   const led = createLedger(tmpdir('ledger'));
-  assert.equal(ingest(led, root).eventsAppended, 0);
+  const summary = ingest(led, root);
+  assert.equal(summary.eventsAppended, 0);
+  assert.equal(summary.filesUnclassified, 1);
 });
 
-test('ingest excludes sidechain rows from a cli transcript', () => {
+// I3: capture stores raw evidence. Whether subagent chatter counts toward a
+// duration is the duration engine's call — dropping the rows here would destroy
+// evidence that cannot be recovered after the transcript expires.
+test('I3: ingest STORES sidechain rows, tagged, rather than discarding them', () => {
   const root = tmpdir('projects');
   project(root, '-Users-dev-a', 'cli.jsonl', row() + row({ isSidechain: true }));
 
-  const led = createLedger(tmpdir('ledger'));
-  assert.equal(ingest(led, root).eventsAppended, 1);
+  const ledgerDir = tmpdir('ledger');
+  assert.equal(ingest(createLedger(ledgerDir), root).eventsAppended, 2);
+
+  const stored = fs.readFileSync(path.join(ledgerDir, 'events.jsonl'), 'utf8')
+    .split('\n').filter(Boolean).map(JSON.parse);
+  assert.deepEqual(stored.map(e => e.isSidechain), [false, true]);
 });
 
 test('a second ingest with no new data appends nothing', () => {
@@ -156,7 +165,7 @@ test('ingest remembers a cached entrypoint so later tails classify correctly', (
 
   // Later rows in a real transcript may omit entrypoint; the cached value must
   // still classify this file as billable.
-  fs.appendFileSync(file, row({ entrypoint: undefined }));
+  fs.appendFileSync(file, row({ entrypoint: undefined, userType: undefined }));
   assert.equal(ingest(createLedger(ledgerDir), root).eventsAppended, 1);
 });
 
@@ -175,13 +184,44 @@ test('ingest counts files by entrypoint', () => {
   const root = tmpdir('projects');
   project(root, '-Users-dev-a', 'cli.jsonl', row());
   project(root, '-Users-dev-b', 'sdk.jsonl', row({ entrypoint: 'sdk-cli' }));
-  project(root, '-Users-dev-c', 'none.jsonl', row({ entrypoint: undefined }));
+  project(root, '-Users-dev-c', 'none.jsonl', row({ entrypoint: undefined, userType: undefined }));
 
   const summary = ingest(createLedger(tmpdir('ledger')), root);
   assert.equal(summary.byEntrypoint.cli, 1);
   assert.equal(summary.byEntrypoint['sdk-cli'], 1);
   assert.equal(summary.byEntrypoint.unknown, 1);
   assert.equal(summary.filesScanned, 3);
+});
+
+// A file counted under no key makes the summary silently under-report: the
+// operator's only evidence of a complete capture stops adding up.
+test('byEntrypoint totals reconcile with filesScanned, zero-byte files included', () => {
+  const root = tmpdir('projects');
+  project(root, '-Users-dev-a', 'cli.jsonl', row());
+  project(root, '-Users-dev-b', 'sdk.jsonl', row({ entrypoint: 'sdk-py' }));
+  project(root, '-Users-dev-c', 'empty.jsonl', '');
+  project(root, '-Users-dev-d', 'partial.jsonl', '{"type":"user"');   // no newline yet
+
+  const summary = ingest(createLedger(tmpdir('ledger')), root);
+  const totalled = Object.values(summary.byEntrypoint).reduce((a, b) => a + b, 0);
+  assert.equal(summary.filesScanned, 4);
+  assert.equal(totalled, summary.filesScanned);
+  assert.equal(summary.byEntrypoint.unknown, 2);
+});
+
+// eventsAppended counts EVENTS; the two skip counters count FILES. Naming them
+// apart is what keeps a billing summary from reading as one unit.
+test('file counters and the event counter carry different units', () => {
+  const root = tmpdir('projects');
+  project(root, '-Users-dev-a', 'cli.jsonl', row() + row() + row());
+  project(root, '-Users-dev-b', 'sdk.jsonl', row({ entrypoint: 'sdk-py' }) + row({ entrypoint: 'sdk-py' }));
+  project(root, '-Users-dev-c', 'none.jsonl', row({ entrypoint: undefined, userType: undefined }));
+
+  const summary = ingest(createLedger(tmpdir('ledger')), root);
+  assert.equal(summary.eventsAppended, 3);      // events
+  assert.equal(summary.filesExcludedSdk, 1);    // files, not the 2 sdk rows
+  assert.equal(summary.filesUnclassified, 1);   // files
+  assert.equal(summary.skippedNonBillable, undefined);
 });
 
 test('ingest stores only the fields the duration engine needs', () => {
@@ -193,12 +233,12 @@ test('ingest stores only the fields the duration engine needs', () => {
   const line = fs.readFileSync(path.join(ledgerDir, 'events.jsonl'), 'utf8')
     .split('\n').filter(Boolean)[0];
   assert.deepEqual(Object.keys(JSON.parse(line)).sort(),
-    ['cwd', 'gitBranch', 'sessionId', 'ts', 'type', 'uuid']);
+    ['cwd', 'gitBranch', 'isSidechain', 'sessionId', 'ts', 'type', 'uuid']);
 });
 
 test('F1: unclassified events are re-read after they classify', () => {
   const root = tmpdir('projects');
-  const file = project(root, '-Users-dev-a', 'unknown.jsonl', row({ entrypoint: undefined }));
+  const file = project(root, '-Users-dev-a', 'unknown.jsonl', row({ entrypoint: undefined, userType: undefined }));
   const ledgerDir = tmpdir('ledger');
 
   // First run: unclassified event is skipped, file not added to state
@@ -243,22 +283,127 @@ test('F2: invalid UTF-8 before final newline yields correct nextOffset', () => {
   assert.deepEqual(second.lines, ['next']);
 });
 
-test('F3: second ingest over sdk file skips without parsing', () => {
+// F3: this must FAIL if the non-billable fast path in ingest.js is deleted.
+// The discriminator is the trailing partial line: the fast path never reads the
+// file and jumps the offset to EOF, while the slow path goes through readTail,
+// which refuses to consume a line with no terminating newline and therefore
+// leaves the offset short of EOF (and reports no new data).
+test('F3: a known-sdk file is skipped without being re-read', () => {
   const root = tmpdir('projects');
   const file = project(root, '-Users-dev-a', 'sdk.jsonl', row({ entrypoint: 'sdk-py' }));
   const ledgerDir = tmpdir('ledger');
 
-  // First ingest: marks file as sdk-py
-  ingest(createLedger(ledgerDir), root);
+  ingest(createLedger(ledgerDir), root);            // first run: classifies sdk-py
 
-  // Append more data
-  fs.appendFileSync(file, row({ entrypoint: 'sdk-py' }));
+  // A complete row plus a row Claude Code is still mid-way through writing.
+  const partial = '{"type":"user","uuid":"u-partial"';
+  fs.appendFileSync(file, row({ entrypoint: 'sdk-py' }) + partial);
 
-  // Second ingest: should skip parsing and just update offset
   const summary = ingest(createLedger(ledgerDir), root);
   assert.equal(summary.eventsAppended, 0);
-  assert.equal(summary.skippedNonBillable, 1);
+  assert.equal(summary.filesExcludedSdk, 1);
+  assert.equal(summary.errors, 0);                  // nothing was parsed at all
+  assert.equal(summary.filesChanged, 1);
+
+  const size = fs.statSync(file).size;
+  const offset = createLedger(ledgerDir).readState().files[file].offset;
+  assert.equal(offset, size);                       // whole file, partial included
+  assert.notEqual(offset, size - partial.length);   // what re-parsing would give
+});
+
+// I2: a corrupt line inside a BILLABLE transcript used to be dropped exactly
+// like an ai-title row, with the offset advancing past it forever.
+test('I2: a malformed line in a billable transcript is counted as an error', () => {
+  const root = tmpdir('projects');
+  project(root, '-Users-dev-a', 'cli.jsonl', row() + '{"type":"user",BROKEN\n' + row());
+
+  const summary = ingest(createLedger(tmpdir('ledger')), root);
+  assert.equal(summary.eventsAppended, 2);   // the two intact rows still land
+  assert.equal(summary.errors, 1);           // and the corrupt one is visible
+});
+
+test('I2: legitimate metadata rows are NOT counted as errors', () => {
+  const root = tmpdir('projects');
+  project(root, '-Users-dev-a', 'cli.jsonl',
+    row() + row({ type: 'ai-title' }) + row({ type: 'file-history-snapshot' }));
+
+  const summary = ingest(createLedger(tmpdir('ledger')), root);
+  assert.equal(summary.eventsAppended, 1);
+  assert.equal(summary.errors, 0);
+});
+
+// C1(a): the real f9236b7c-… transcript states entrypoint 'cli' only on system
+// and attachment rows and has no user/assistant rows at all. It never
+// classified, so it was re-read on every run until the transcript expired.
+test('C1a: a file stating entrypoint only on non-activity rows classifies', () => {
+  const root = tmpdir('projects');
+  const body = [
+    JSON.stringify({ type: 'system', timestamp: '2026-08-15T14:05:33.803Z', entrypoint: 'cli' }),
+    JSON.stringify({ type: 'last-prompt', prompt: 'do the thing' }),
+    JSON.stringify({ type: 'permission-mode', mode: 'acceptEdits' }),
+  ].join('\n') + '\n';
+  const file = project(root, '-Users-dev-a', 'f9236b7c.jsonl', body);
+  const ledgerDir = tmpdir('ledger');
+
+  const summary = ingest(createLedger(ledgerDir), root);
+  assert.equal(summary.byEntrypoint.cli, 1);
+  assert.equal(summary.filesUnclassified, 0);
+  // Classified means the offset is recorded, so it stops being re-read forever.
   assert.equal(createLedger(ledgerDir).readState().files[file].offset, fs.statSync(file).size);
+});
+
+test('C1a: an sdk entrypoint on a non-activity row still excludes the file', () => {
+  const root = tmpdir('projects');
+  const body = JSON.stringify({ type: 'system', entrypoint: 'sdk-cli' }) + '\n'
+    + row({ entrypoint: undefined, userType: 'external' });
+  project(root, '-Users-dev-a', 'sdk.jsonl', body);
+
+  const summary = ingest(createLedger(tmpdir('ledger')), root);
+  assert.equal(summary.eventsAppended, 0);
+  assert.equal(summary.filesExcludedSdk, 1);
+  assert.equal(summary.byEntrypoint['sdk-cli'], 1);
+});
+
+// C1(b): 10 real transcripts state no entrypoint at all yet carry the user's own
+// turns, in billable repos. They were reported as "non-interactive" and dropped.
+test('C1b: a file with no entrypoint but human turns is captured as interactive', () => {
+  const root = tmpdir('projects');
+  const file = project(root, '-Users-dev-a', 'none.jsonl',
+    row({ entrypoint: undefined, userType: 'external' })
+    + row({ entrypoint: undefined, userType: undefined, type: 'assistant' }));
+  const ledgerDir = tmpdir('ledger');
+
+  const summary = ingest(createLedger(ledgerDir), root);
+  assert.equal(summary.eventsAppended, 2);
+  assert.equal(summary.filesUnclassified, 0);
+  assert.equal(summary.byEntrypoint.interactive, 1);
+  assert.equal(createLedger(ledgerDir).readState().files[file].entrypoint, 'interactive');
+});
+
+test('C1b: an inferred file yields to an sdk entrypoint stated in a later tail', () => {
+  const root = tmpdir('projects');
+  const file = project(root, '-Users-dev-a', 'none.jsonl', row({ entrypoint: undefined, userType: 'external' }));
+  const ledgerDir = tmpdir('ledger');
+
+  assert.equal(ingest(createLedger(ledgerDir), root).byEntrypoint.interactive, 1);
+
+  fs.appendFileSync(file, row({ entrypoint: 'sdk-cli' }));
+  const summary = ingest(createLedger(ledgerDir), root);
+  assert.equal(summary.eventsAppended, 0);
+  assert.equal(summary.byEntrypoint['sdk-cli'], 1);
+  assert.equal(createLedger(ledgerDir).readState().files[file].entrypoint, 'sdk-cli');
+});
+
+test('C1b: a cached interactive classification survives a tail with no markers', () => {
+  const root = tmpdir('projects');
+  const file = project(root, '-Users-dev-a', 'none.jsonl', row({ entrypoint: undefined, userType: 'external' }));
+  const ledgerDir = tmpdir('ledger');
+  ingest(createLedger(ledgerDir), root);
+
+  fs.appendFileSync(file, row({ entrypoint: undefined, userType: undefined, type: 'assistant' }));
+  const summary = ingest(createLedger(ledgerDir), root);
+  assert.equal(summary.eventsAppended, 1);
+  assert.equal(summary.byEntrypoint.interactive, 1);
 });
 
 test('F4: errors counter increments on file stat failures', () => {
