@@ -119,6 +119,10 @@ recovered once deleted.
 `sdk-cli` and `sdk-py` transcripts are excluded: those are unattended agent runs,
 not human work.
 
+Ingest is wired to a global `SessionStart` hook in `~/.claude/settings.json` (global,
+not project — the work being captured spans every repo, not just this one). It runs
+`async` and logs to `~/.claude/session-jibble/ingest.log`. Review it with `/hooks`.
+
 ## Frontend component details
 
 ### `TodayCards`
