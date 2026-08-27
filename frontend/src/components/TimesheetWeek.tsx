@@ -12,7 +12,13 @@ interface Props {
 
 type SubmitState = 'idle' | 'submitting' | 'done' | 'error';
 
-const entryKey = (e: TimesheetEntry) => [e.workDate, e.projectId ?? '', e.activityId].join('|');
+// Must stay byte-identical to entryKey() in backend/lib/sphere360/merge.js:
+// this set decides which filed rows are shown as superseded, and the server's
+// copy decides which are actually replaced. JSON.stringify, not join('|'), so an
+// id containing the separator cannot alias a different triple — a false match
+// here DELETES a filed row.
+const entryKey = (e: TimesheetEntry) =>
+  JSON.stringify([e.workDate, e.projectId ?? '', e.activityId]);
 
 const shiftWeek = (monday: string, weeks: number) => {
   const [y, m, d] = monday.split('-').map(Number);
@@ -109,12 +115,20 @@ export function TimesheetWeek({ open, onOpenChange }: Props) {
   const loading = open && loadedAnchor !== anchor;
   const drafted = Object.values(edits);
 
+  // Derived from the LIVE rows, never from data.replacedKeys — that field is the
+  // server's snapshot of the ORIGINAL draft, and the attribution <select> changes
+  // a row's projectId/activityId and therefore its key. Re-attribute a drafted
+  // row onto a filed row's key and the stale set would leave that filed row
+  // un-struck and its hours in the day total, while the server's merge replaces
+  // it: a row this app did not author destroyed silently, under a total the
+  // operator confirmed. The server still sends replacedKeys; the UI ignores it.
+  const replaced = new Set(drafted.map(entryKey));
+
   const dayTotal = (date: string) => {
     if (!data) return 0;
-    const replaced = new Set(data.replacedKeys);
     const filed = data.filed
       .filter(e => e.workDate === date && !replaced.has(entryKey(e)))
-      .reduce((s, e) => s + e.hours, 0);
+      .reduce((s, e) => s + (Number(e.hours) || 0), 0);
     const mine = drafted.filter(e => e.workDate === date).reduce((s, e) => s + (Number(e.hours) || 0), 0);
     return parseFloat((filed + mine).toFixed(2));
   };
@@ -200,9 +214,13 @@ export function TimesheetWeek({ open, onOpenChange }: Props) {
         )}
 
         {data?.dates.map(date => {
-          const replaced = new Set(data.replacedKeys);
           const filedRows = data.filed.filter(e => e.workDate === date);
-          const myRows = drafted.filter(e => e.workDate === date);
+          // Object.entries, not drafted.filter: the handlers below must address
+          // `edits` by the key it is actually stored under. Re-deriving the key
+          // from an edited row leaves prev[key] undefined after the first
+          // re-attribution, which writes a ghost entry with no workDate and
+          // freezes hours, comments and Confirm.
+          const myRows = Object.entries(edits).filter(([, e]) => e.workDate === date);
           const total = dayTotal(date);
           const isWorkday = data.byDay.find(d => d.date === date)?.isWorkday ?? true;
           const short = isWorkday
@@ -228,8 +246,11 @@ export function TimesheetWeek({ open, onOpenChange }: Props) {
                         replaced.has(entryKey(e)) ? 'text-muted-foreground line-through' : ''
                       }`}
                     >
-                      <span className="truncate pr-2">{e.comments.split('\n')[0] || '(no comment)'}</span>
-                      <span className="tabular-nums">{e.hours.toFixed(2)} h</span>
+                      {/* Filed rows are Sphere360's, not ours: a null comment or a
+                          string hours field would throw during render and blank the
+                          whole dashboard — there is no error boundary. */}
+                      <span className="truncate pr-2">{(e.comments ?? '').split('\n')[0] || '(no comment)'}</span>
+                      <span className="tabular-nums">{(Number(e.hours) || 0).toFixed(2)} h</span>
                     </div>
                   ))}
                 </div>
@@ -243,52 +264,49 @@ export function TimesheetWeek({ open, onOpenChange }: Props) {
                       ⚠ uncorrected
                     </span>
                   </div>
-                  {myRows.map(e => {
-                    const key = entryKey(e);
-                    return (
-                      <div key={key} className="space-y-1">
-                        <div className="flex items-center gap-2">
-                          <select
-                            className="rounded border px-2 py-1 text-sm"
-                            value={data.projects.findIndex(
-                              p => p.projectId === e.projectId && p.activityId === e.activityId
-                            )}
-                            onChange={ev => {
-                              const picked = data.projects[Number(ev.target.value)];
-                              if (!picked) return;
-                              setEdits(prev => ({
-                                ...prev,
-                                [key]: { ...prev[key], projectId: picked.projectId, activityId: picked.activityId },
-                              }));
-                            }}
-                          >
-                            {data.projects.map((p: ProjectOption, i: number) => (
-                              <option key={`${p.projectId}-${p.activityId}`} value={i}>{p.label}</option>
-                            ))}
-                          </select>
-                          <input
-                            className="w-20 rounded border px-2 py-1 text-sm tabular-nums"
-                            type="number" step="0.01" min="0" max="24"
-                            value={e.hours}
-                            onChange={ev => setEdits(prev => ({
+                  {myRows.map(([key, e]) => (
+                    <div key={key} className="space-y-1">
+                      <div className="flex items-center gap-2">
+                        <select
+                          className="rounded border px-2 py-1 text-sm"
+                          value={data.projects.findIndex(
+                            p => p.projectId === e.projectId && p.activityId === e.activityId
+                          )}
+                          onChange={ev => {
+                            const picked = data.projects[Number(ev.target.value)];
+                            if (!picked) return;
+                            setEdits(prev => ({
                               ...prev,
-                              [key]: { ...prev[key], hours: parseFloat(ev.target.value) || 0 },
-                            }))}
-                          />
-                          <span className="text-xs text-muted-foreground">hours</span>
-                        </div>
-                        <textarea
-                          className="w-full rounded border px-2 py-1 text-sm"
-                          rows={2}
-                          value={e.comments}
+                              [key]: { ...prev[key], projectId: picked.projectId, activityId: picked.activityId },
+                            }));
+                          }}
+                        >
+                          {data.projects.map((p: ProjectOption, i: number) => (
+                            <option key={`${p.projectId}-${p.activityId}`} value={i}>{p.label}</option>
+                          ))}
+                        </select>
+                        <input
+                          className="w-20 rounded border px-2 py-1 text-sm tabular-nums"
+                          type="number" step="0.01" min="0" max="24"
+                          value={e.hours}
                           onChange={ev => setEdits(prev => ({
                             ...prev,
-                            [key]: { ...prev[key], comments: ev.target.value },
+                            [key]: { ...prev[key], hours: parseFloat(ev.target.value) || 0 },
                           }))}
                         />
+                        <span className="text-xs text-muted-foreground">hours</span>
                       </div>
-                    );
-                  })}
+                      <textarea
+                        className="w-full rounded border px-2 py-1 text-sm"
+                        rows={2}
+                        value={e.comments}
+                        onChange={ev => setEdits(prev => ({
+                          ...prev,
+                          [key]: { ...prev[key], comments: ev.target.value },
+                        }))}
+                      />
+                    </div>
+                  ))}
                 </div>
               )}
 
