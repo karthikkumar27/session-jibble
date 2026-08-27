@@ -8,6 +8,18 @@ const {
   loadConfig, saveConfig, validateConfig, isUnconfigured,
 } = require('./lib/config');
 
+// Node 22 ships this, so the Sphere360 token needs no dotenv dependency.
+// Absent .env is normal — the sync routes report a missing token themselves.
+try { process.loadEnvFile(path.join(__dirname, '.env')); } catch { /* no .env yet */ }
+
+const { weekDates, mondayOf, weekStartInstant } = require('./lib/sphere360/week');
+const {
+  loadMapping, saveMapping, validateMapping,
+} = require('./lib/sphere360/mapping');
+const { buildDraft } = require('./lib/sphere360/draft');
+const { mergeWeek, entryKey } = require('./lib/sphere360/merge');
+const { createClient } = require('./lib/sphere360/client');
+
 const app = express();
 
 // This API is unauthenticated and serves the user's entire session history along
@@ -170,6 +182,42 @@ function activeMsByDay(sortedTs) {
     attributeGap(byDay, sortedTs[i - 1], sortedTs[i]);
   }
   return byDay;
+}
+
+// Builds the (projectPath, date) activity for one week, with full paths.
+// Hours are summed across concurrent sessions — the known uncorrected behaviour
+// documented in docs/billing-accuracy-plan.md, surfaced in the UI as "uncorrected".
+function weekActivity(dates) {
+  const wanted = new Set(dates);
+  const groups = groupSessionsFromHistory(readHistory());
+  const sessions = [];
+  const hoursTable = new Map();   // `${projectPath}|${date}` -> hours
+
+  for (const [sessionId, { project, timestamps }] of Object.entries(groups)) {
+    if (!project) continue;
+    const byDay = activeMsByDay(timestamps);
+    const active = Object.keys(byDay).filter(d => wanted.has(d));
+    if (active.length === 0) continue;
+
+    for (const date of active) {
+      const key = `${project}|${date}`;
+      hoursTable.set(key, (hoursTable.get(key) || 0) + byDay[date] / 3_600_000);
+    }
+
+    const projectDir = cwdToProjectDir(project);
+    const aiTitle = projectDir ? getAiTitle(projectDir, sessionId) : '';
+    sessions.push({
+      projectPath: project,
+      sessionId,
+      excerpt: (aiTitle || '').slice(0, 100),
+      dates: active,
+    });
+  }
+
+  const hoursFor = (projectPath, date) =>
+    parseFloat((hoursTable.get(`${projectPath}|${date}`) || 0).toFixed(2));
+
+  return { sessions, hoursFor };
 }
 
 function parseClaudeData() {
@@ -354,6 +402,148 @@ app.get('/api/projects', (req, res) => {
     res.json(rows);
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/sphere360/mapping', (req, res) => {
+  res.json(loadMapping());
+});
+
+app.put('/api/sphere360/mapping', (req, res) => {
+  const { mapping, errors } = validateMapping(req.body);
+  if (!mapping) return res.status(400).json({ errors });
+  try {
+    saveMapping(mapping);
+    res.json({ mapping });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Reads a week and returns it merged in preview: what is filed, what this app
+// would draft, and what the day totals become. Nothing is written.
+app.get('/api/sphere360/week', async (req, res) => {
+  try {
+    const anchor = req.query.date || toLocalDate(Date.now());
+    const monday = mondayOf(anchor);
+    const dates = weekDates(anchor);
+    const { mapping, error: mappingError } = loadMapping();
+
+    let filed = [];
+    let fetchError = null;
+    try {
+      filed = await createClient().fetchWeek(weekStartInstant(anchor));
+    } catch (err) {
+      fetchError = { code: err.code, message: err.message };
+    }
+
+    const { sessions, hoursFor } = weekActivity(dates);
+    const { entries: drafted, unmapped } =
+      buildDraft({ anyDateInWeek: anchor, sessions, mapping, hoursFor });
+
+    const { entries: preview, replaced } = mergeWeek({ filed, drafted });
+    const replacedKeys = replaced.map(entryKey);
+
+    const minimum = mapping.dailyMinimumHours;
+    const byDay = dates.map((date, i) => {
+      const on = (list) => list.filter(e => e.workDate === date)
+        .reduce((sum, e) => sum + (Number(e.hours) || 0), 0);
+      const totalHours = parseFloat(on(preview).toFixed(2));
+      // dates[] is Monday-first, so 5 and 6 are Saturday and Sunday. The floor is
+      // a working-day expectation: applying it to the weekend would invent a 16h
+      // shortfall every week and train the operator to ignore the warning.
+      const isWorkday = i < 5;
+      return {
+        date,
+        isWorkday,
+        filedHours: parseFloat(on(filed).toFixed(2)),
+        draftedHours: parseFloat(on(drafted).toFixed(2)),
+        totalHours,
+        // Positive means the day is short of the floor. Over the floor is fine.
+        shortBy: isWorkday ? parseFloat(Math.max(0, minimum - totalHours).toFixed(2)) : 0,
+      };
+    });
+
+    res.json({
+      monday,
+      weekStart: weekStartInstant(anchor),
+      dates,
+      // Fills the spec's `taxonomy` slot. Until Task 1's probe finds a live
+      // taxonomy endpoint, the mapping file IS the list — the documented
+      // fallback. The UI needs it so a drafted row can be re-attributed,
+      // per billing-accuracy decision 7: attribution is a human step.
+      projects: mapping.projects.map(({ label, projectId, activityId }) =>
+        ({ label, projectId, activityId })),
+      filed,
+      drafted,
+      replacedKeys,
+      unmapped,
+      byDay,
+      dailyMinimumHours: minimum,
+      resourceId: mapping.resourceId,
+      mappingConfigured: mapping.projects.length > 0 && Boolean(mapping.resourceId),
+      mappingError,
+      fetchError,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Re-reads the week before merging: the operator's draft may be minutes old, and
+// a stale union would erase anything edited in Sphere360's own UI meanwhile.
+app.post('/api/sphere360/week', async (req, res) => {
+  try {
+    const { date, entries } = req.body || {};
+    if (!date || !Array.isArray(entries)) {
+      return res.status(400).json({ error: 'Body must be { date, entries[] }' });
+    }
+
+    const { mapping } = loadMapping();
+    if (!mapping.resourceId) {
+      return res.status(412).json({ error: 'No resourceId configured in the timesheet mapping' });
+    }
+
+    // Re-attribution in the UI can collapse two rows onto one key. Posting both
+    // would file the same work twice, so reject it here rather than let the
+    // union carry a duplicate.
+    const keys = new Set();
+    for (const e of entries) {
+      const k = `${e.workDate}|${e.projectId ?? ''}|${e.activityId}`;
+      if (keys.has(k)) {
+        return res.status(400).json({
+          error: `Two entries on ${e.workDate} share the same project and activity — merge them first`,
+        });
+      }
+      keys.add(k);
+    }
+
+    const dates = new Set(weekDates(date));
+    for (const e of entries) {
+      if (!dates.has(e.workDate)) {
+        return res.status(400).json({ error: `${e.workDate} is outside the posted week` });
+      }
+      if (!e.activityId) return res.status(400).json({ error: 'Every entry needs an activityId' });
+      const h = Number(e.hours);
+      if (!Number.isFinite(h) || h <= 0 || h > 24) {
+        return res.status(400).json({ error: `Invalid hours ${JSON.stringify(e.hours)} on ${e.workDate}` });
+      }
+    }
+
+    const client = createClient();
+    const filed = await client.fetchWeek(weekStartInstant(date));
+    const { entries: union, replaced } = mergeWeek({ filed, drafted: entries });
+
+    await client.upsertWeek({
+      weekStart: weekStartInstant(date),
+      resourceId: mapping.resourceId,
+      entries: union,
+    });
+
+    res.json({ weekStart: weekStartInstant(date), written: union.length, replaced: replaced.length });
+  } catch (err) {
+    const status = err.code === 'NO_TOKEN' ? 412 : err.code === 'AUTH' ? 401 : 502;
+    res.status(status).json({ error: err.message, code: err.code });
   }
 });
 
