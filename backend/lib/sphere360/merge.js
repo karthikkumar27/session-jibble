@@ -8,8 +8,12 @@
 // Ownership key: the same triple draft.js groups by. A drafted row owns a filed
 // row when both describe the same work on the same day. A missing projectId and
 // an empty one are the same absence, so non-project rows key stably.
+//
+// JSON.stringify, not join('|'): a separator an id may itself contain can alias
+// two distinct triples, and a false match here DELETES a filed row. JSON quotes
+// and escapes each field, so the encoding is injective.
 function entryKey(entry) {
-  return [entry.workDate, entry.projectId ?? '', entry.activityId].join('|');
+  return JSON.stringify([entry.workDate, entry.projectId ?? '', entry.activityId]);
 }
 
 function mergeWeek({ filed = [], drafted = [], __forceDrop = false }) {

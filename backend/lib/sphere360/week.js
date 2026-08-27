@@ -13,6 +13,17 @@ function assertLocalDate(d) {
   if (typeof d !== 'string' || !DATE_RE.test(d)) {
     throw new Error(`Expected a YYYY-MM-DD local date, got ${JSON.stringify(d)}`);
   }
+  // Shape is not enough. Date.UTC normalises an impossible calendar date instead
+  // of rejecting it, so '2026-02-30' becomes Mar 2 and mondayOf() silently
+  // returns the WRONG WEEK — on a route whose date is free text from a URL, and
+  // whose week a later POST replaces wholesale. Round-tripping the instant back
+  // to a string proves no normalisation happened.
+  const [y, m, day] = d.split('-').map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, day));
+  const back = `${dt.getUTCFullYear()}-${String(dt.getUTCMonth() + 1).padStart(2, '0')}-${String(dt.getUTCDate()).padStart(2, '0')}`;
+  if (back !== d) {
+    throw new Error(`Expected a YYYY-MM-DD local date, got ${JSON.stringify(d)}`);
+  }
 }
 
 // Parsed as UTC on purpose: these are calendar labels, not instants, so doing the

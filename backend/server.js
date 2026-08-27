@@ -509,7 +509,11 @@ app.post('/api/sphere360/week', async (req, res) => {
     // union carry a duplicate.
     const keys = new Set();
     for (const e of entries) {
-      const k = `${e.workDate}|${e.projectId ?? ''}|${e.activityId}`;
+      // entryKey(), never a hand-rolled format: this check must agree with the
+      // ownership key mergeWeek() uses, character for character. The two drifted
+      // once already — join('|') renders a missing activityId as "" where a
+      // template literal renders "undefined".
+      const k = entryKey(e);
       if (keys.has(k)) {
         return res.status(400).json({
           error: `Two entries on ${e.workDate} share the same project and activity — merge them first`,

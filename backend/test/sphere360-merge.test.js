@@ -96,3 +96,23 @@ test('throws rather than posting a union that lost a row', () => {
     /would drop/
   );
 });
+
+test('an id containing the old separator cannot alias a different triple', () => {
+  // join('|') mapped both of these to '2026-08-26|a|b|c'. A false match here
+  // makes mergeWeek treat an unrelated filed row as replaced — and the
+  // week-replacing POST then deletes it.
+  const a = { workDate: '2026-08-26', projectId: 'a|b', activityId: 'c' };
+  const b = { workDate: '2026-08-26', projectId: 'a', activityId: 'b|c' };
+  assert.notEqual(entryKey(a), entryKey(b));
+
+  const { kept, replaced } = mergeWeek({ filed: [{ ...a, hours: 3, comments: 'client workshop' }], drafted: [{ ...b, hours: 1 }] });
+  assert.equal(replaced.length, 0);
+  assert.equal(kept.length, 1);
+});
+
+test('a missing and an empty projectId still key identically', () => {
+  assert.equal(
+    entryKey({ workDate: '2026-08-26', activityId: 'act-social' }),
+    entryKey({ workDate: '2026-08-26', projectId: '', activityId: 'act-social' }),
+  );
+});

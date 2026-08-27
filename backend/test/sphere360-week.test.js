@@ -46,3 +46,14 @@ test('weekDates crosses a year boundary without gaps', () => {
 test('rejects a malformed date rather than guessing', () => {
   assert.throws(() => mondayOf('26-08-2026'), /YYYY-MM-DD/);
 });
+
+test('rejects a calendar-invalid date instead of normalising it into another week', () => {
+  // Shape-only validation let '2026-02-30' through; Date.UTC normalised it to
+  // Mar 2 and mondayOf() returned the week of Mar 2 — the WRONG week, on a path
+  // whose next POST replaces that week wholesale.
+  assert.throws(() => mondayOf('2026-02-30'), /YYYY-MM-DD/);
+  assert.throws(() => mondayOf('2026-13-01'), /YYYY-MM-DD/);
+  assert.throws(() => mondayOf('2025-02-29'), /YYYY-MM-DD/);
+  // A real leap day still passes.
+  assert.equal(mondayOf('2028-02-29'), '2028-02-28');
+});
