@@ -981,8 +981,11 @@ test('entryKey distinguishes a missing projectId from an empty one', () => {
 
 test('throws rather than posting a union that lost a row', () => {
   // Guards against a future refactor silently dropping filed rows.
+  // TWO filed rows and zero replacements: the forced union holds only the single
+  // drafted row, so 1 < 2 and the guard fires. With one filed row the threshold
+  // would equal the union size and this test could never fail.
   assert.throws(
-    () => mergeWeek({ filed: [scrum], drafted: [dev], __forceDrop: true }),
+    () => mergeWeek({ filed: [scrum, social], drafted: [dev], __forceDrop: true }),
     /would drop/
   );
 });
@@ -1074,11 +1077,14 @@ const { test } = require('node:test');
 const assert = require('node:assert');
 const { createClient } = require('../lib/sphere360/client');
 
-const withToken = (value, fn) => {
+// async + await on purpose: a synchronous try/finally around an async fn restores
+// the environment BEFORE the awaited body runs, so every assertion inside would
+// see the ambient token rather than the one under test.
+const withToken = async (value, fn) => {
   const prev = process.env.SPHERE360_TOKEN;
   if (value === null) delete process.env.SPHERE360_TOKEN;
   else process.env.SPHERE360_TOKEN = value;
-  try { return fn(); } finally {
+  try { return await fn(); } finally {
     if (prev === undefined) delete process.env.SPHERE360_TOKEN;
     else process.env.SPHERE360_TOKEN = prev;
   }
@@ -1117,18 +1123,21 @@ test('sends the bearer header and returns parsed entries', async () => {
 });
 
 test('reads the token at call time, so a rotated token needs no restart', async () => {
+  // ONE client, constructed outside any token scope, called twice under different
+  // tokens. Constructing a client per call would pass even if the token were read
+  // at construction time — which is the whole property being asserted here.
+  const headers = [];
   const client = createClient({
-    fetchImpl: async (_url, init) => ok({ entries: [], seen: init.headers.authorization })(),
+    fetchImpl: async (_url, init) => {
+      headers.push(init.headers.authorization);
+      return ok({ entries: [] })();
+    },
   });
-  const grab = async () => {
-    let header;
-    const c = createClient({ fetchImpl: async (_u, init) => { header = init.headers.authorization; return ok({ entries: [] })(); } });
-    await c.fetchWeek('w');
-    return header;
-  };
-  assert.equal(await withToken('first', grab), 'Bearer first');
-  assert.equal(await withToken('second', grab), 'Bearer second');
-  assert.ok(client);
+
+  await withToken('first', () => client.fetchWeek('w'));
+  await withToken('second', () => client.fetchWeek('w'));
+
+  assert.deepEqual(headers, ['Bearer first', 'Bearer second']);
 });
 
 test('maps 401 to a distinct, actionable auth error', async () => {
@@ -1414,17 +1423,22 @@ app.get('/api/sphere360/week', async (req, res) => {
     const replacedKeys = replaced.map(entryKey);
 
     const minimum = mapping.dailyMinimumHours;
-    const byDay = dates.map(date => {
+    const byDay = dates.map((date, i) => {
       const on = (list) => list.filter(e => e.workDate === date)
         .reduce((sum, e) => sum + (Number(e.hours) || 0), 0);
       const totalHours = parseFloat(on(preview).toFixed(2));
+      // dates[] is Monday-first, so 5 and 6 are Saturday and Sunday. The floor is
+      // a working-day expectation: applying it to the weekend would invent a 16h
+      // shortfall every week and train the operator to ignore the warning.
+      const isWorkday = i < 5;
       return {
         date,
+        isWorkday,
         filedHours: parseFloat(on(filed).toFixed(2)),
         draftedHours: parseFloat(on(drafted).toFixed(2)),
         totalHours,
         // Positive means the day is short of the floor. Over the floor is fine.
-        shortBy: parseFloat(Math.max(0, minimum - totalHours).toFixed(2)),
+        shortBy: isWorkday ? parseFloat(Math.max(0, minimum - totalHours).toFixed(2)) : 0,
       };
     });
 
@@ -1566,10 +1580,11 @@ export interface TimesheetEntry {
 
 export interface DayTotals {
   date: string;
+  isWorkday: boolean;  // false for Sat/Sun — the floor is a working-day concept
   filedHours: number;
   draftedHours: number;
   totalHours: number;
-  shortBy: number;   // positive = below the floor; 0 = at or over it
+  shortBy: number;     // positive = below the floor; always 0 on a non-workday
 }
 
 export interface UnmappedFolder {
@@ -1714,9 +1729,15 @@ export function TimesheetWeek({ open, onOpenChange }: Props) {
     }
   };
 
-  const weekShort = data
-    ? parseFloat(data.byDay.reduce((s, d) => s + d.shortBy, 0).toFixed(2))
+  // Recomputed from dayTotal(), not from data.byDay: the server's figures are a
+  // snapshot from load time, and the day rows below already track live edits. A
+  // footer reading server state would contradict the rows the moment an hours
+  // field is touched.
+  const weekLogged = data
+    ? parseFloat(data.dates.reduce((s, d) => s + dayTotal(d), 0).toFixed(2))
     : 0;
+  const weekFloor = data ? data.dailyMinimumHours * 5 : 0;
+  const weekShort = parseFloat(Math.max(0, weekFloor - weekLogged).toFixed(2));
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
@@ -1758,7 +1779,10 @@ export function TimesheetWeek({ open, onOpenChange }: Props) {
           const filedRows = data.filed.filter(e => e.workDate === date);
           const myRows = drafted.filter(e => e.workDate === date);
           const total = dayTotal(date);
-          const short = parseFloat(Math.max(0, data.dailyMinimumHours - total).toFixed(2));
+          const isWorkday = data.byDay.find(d => d.date === date)?.isWorkday ?? true;
+          const short = isWorkday
+            ? parseFloat(Math.max(0, data.dailyMinimumHours - total).toFixed(2))
+            : 0;
 
           return (
             <div key={date} className="rounded-lg border p-3">
@@ -1869,8 +1893,8 @@ export function TimesheetWeek({ open, onOpenChange }: Props) {
 
         {data && (
           <div className="text-sm text-muted-foreground">
-            {data.byDay.reduce((s, d) => s + d.totalHours, 0).toFixed(2)} h logged
-            {weekShort > 0 && ` · ${weekShort.toFixed(2)} h below the ${(data.dailyMinimumHours * 5).toFixed(0)} h floor`}
+            {weekLogged.toFixed(2)} h logged
+            {weekShort > 0 && ` · ${weekShort.toFixed(2)} h below the ${weekFloor.toFixed(0)} h floor`}
           </div>
         )}
 
