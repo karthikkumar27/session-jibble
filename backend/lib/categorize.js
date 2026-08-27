@@ -67,4 +67,4 @@ function classifyProject(cwd, config, options) {
   return 'uncategorized';
 }
 
-module.exports = { DEFAULT_OPTIONS, normalizePath, classifyProject };
+module.exports = { DEFAULT_OPTIONS, normalizePath, matchesRoot, classifyProject };
