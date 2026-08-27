@@ -60,18 +60,39 @@ test('rows on different dates never collide', () => {
   assert.deepEqual(replaced, []);
 });
 
+test('duplicate filed rows sharing a key both surface as replaced, not silently deduped', () => {
+  // Intended, not accidental: if the server ever files two rows under one key,
+  // a matching drafted row must not silently keep one and replace the other —
+  // both go to `replaced` so the UI strikes through everything being
+  // superseded, and `entries` gets the single drafted row once, not twice.
+  const staleA = { ...dev, hours: 3, comments: 'first stale entry' };
+  const staleB = { ...dev, hours: 2, comments: 'second stale entry' };
+  const { entries, replaced } = mergeWeek({ filed: [staleA, staleB], drafted: [dev] });
+
+  assert.equal(replaced.length, 2);
+  assert.ok(replaced.includes(staleA));
+  assert.ok(replaced.includes(staleB));
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0], dev);
+});
+
 test('entryKey distinguishes a missing projectId from an empty one', () => {
-  assert.equal(entryKey(social), entryKey({ ...social, projectId: undefined }));
+  assert.equal(entryKey(social), entryKey({ ...social, projectId: '' }));
   assert.notEqual(entryKey(social), entryKey({ ...social, projectId: '1804361' }));
 });
 
 test('throws rather than posting a union that lost a row', () => {
-  // Guards against a future refactor silently dropping filed rows.
-  // TWO filed rows and zero replacements: the forced union holds only the single
-  // drafted row, so 1 < 2 and the guard fires. With one filed row the threshold
-  // would equal the union size and this test could never fail.
+  // Guards against a future refactor silently dropping filed rows. The guard
+  // checks membership by identity, not by counting, so it fires whenever a
+  // kept row goes missing from the union — including with just one filed row,
+  // a case the old count-based formula could never catch (its arithmetic
+  // reduced to `drafted.length < 0`, which is never true).
   assert.throws(
     () => mergeWeek({ filed: [scrum, social], drafted: [dev], __forceDrop: true }),
+    /would drop/
+  );
+  assert.throws(
+    () => mergeWeek({ filed: [scrum], drafted: [dev], __forceDrop: true }),
     /would drop/
   );
 });
