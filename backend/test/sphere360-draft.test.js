@@ -9,6 +9,7 @@ const mapping = {
   projects: [
     { label: 'SkyIQ / Dev', roots: ['/work/skyiq'], projectId: '1804361', activityId: 'act-dev' },
     { label: 'SkyIQ / Scrum', roots: ['/work/scrum'], projectId: '1804361', activityId: 'act-scrum' },
+    { label: 'Other Project', roots: ['/other'], projectId: '1804362', activityId: 'act-other' },
   ],
 };
 
@@ -111,17 +112,19 @@ test('orders entries by date then project then activity, deterministically', () 
   const { entries } = buildDraft({
     anyDateInWeek: '2026-08-26',
     sessions: [
-      { projectPath: '/work/scrum/n', sessionId: 's1', excerpt: 'b', dates: ['2026-08-27'] },
-      { projectPath: '/work/skyiq/w', sessionId: 's2', excerpt: 'a', dates: ['2026-08-25'] },
-      { projectPath: '/work/scrum/n', sessionId: 's3', excerpt: 'c', dates: ['2026-08-25'] },
+      // Supplied in reverse order of expected sorted output to verify all three tiebreakers are exercised
+      { projectPath: '/work/scrum/n', sessionId: 's1', excerpt: 'z', dates: ['2026-08-27'] },  // last after sort (2026-08-27)
+      { projectPath: '/other/x', sessionId: 's2', excerpt: 'y', dates: ['2026-08-25'] },       // 3rd after sort (projectId tiebreaker)
+      { projectPath: '/work/scrum/n', sessionId: 's3', excerpt: 'x', dates: ['2026-08-25'] },  // 2nd after sort (activityId tiebreaker)
+      { projectPath: '/work/skyiq/w', sessionId: 's4', excerpt: 'w', dates: ['2026-08-25'] },  // 1st after sort
     ],
     mapping,
     hoursFor: () => 1,
   });
 
   assert.deepEqual(
-    entries.map(e => `${e.workDate}/${e.activityId}`),
-    ['2026-08-25/act-dev', '2026-08-25/act-scrum', '2026-08-27/act-scrum']
+    entries.map(e => `${e.workDate}/${e.projectId}/${e.activityId}`),
+    ['2026-08-25/1804361/act-dev', '2026-08-25/1804361/act-scrum', '2026-08-25/1804362/act-other', '2026-08-27/1804361/act-scrum']
   );
 });
 
