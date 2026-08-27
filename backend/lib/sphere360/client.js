@@ -50,7 +50,7 @@ function createClient({ fetchImpl = globalThis.fetch, baseUrl = BASE_URL } = {})
       const res = await fetchImpl(url, { method: 'GET', headers: h });
       await assertOk(res);
       const body = await res.json();
-      return Array.isArray(body) ? body : (body.entries ?? []);
+      return Array.isArray(body) ? body : (body?.entries ?? []);
     },
 
     // No retry, ever. This endpoint replaces a week; a retried POST after an
