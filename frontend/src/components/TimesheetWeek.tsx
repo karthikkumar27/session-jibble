@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { AlertCircle, Check, ChevronLeft, ChevronRight, Loader2 } from 'lucide-react';
 import { Sheet, SheetContent, SheetTitle, SheetDescription } from '@/components/ui/sheet';
 import { Button } from '@/components/ui/button';
@@ -43,25 +43,59 @@ export function TimesheetWeek({ open, onOpenChange }: Props) {
   // comparing `anchor` against the anchor the current `data` was loaded for;
   // `loadedAnchor` is only ever written from inside `load`, after its await.
   const [loadedAnchor, setLoadedAnchor] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [edits, setEdits] = useState<Record<string, TimesheetEntry>>({});
   const [submit, setSubmit] = useState<SubmitState>('idle');
   const [submitError, setSubmitError] = useState<string | null>(null);
 
-  const load = useCallback(async (date: string) => {
-    try {
-      const res = await fetch(`/api/sphere360/week?date=${date}`);
-      const body: WeekResponse = await res.json();
-      setData(body);
-      // Seed the editable copy from the server's draft on every load, so
-      // switching weeks never carries another week's edits across.
-      const seeded: Record<string, TimesheetEntry> = {};
-      for (const e of body.drafted) seeded[entryKey(e)] = { ...e };
-      setEdits(seeded);
-      setSubmit('idle');
-      setSubmitError(null);
-    } finally {
-      setLoadedAnchor(date);
-    }
+  // Monotonic request id. A response is applied only if it belongs to the most
+  // recent request: a late reply for an older week must never overwrite a newer
+  // one, because the header would silently flip back while Confirm stayed live.
+  const latestRequest = useRef(0);
+
+  // Promise-chained rather than async/await + try/catch: a JS `catch` clause
+  // inside an async function is reachable synchronously (before the effect's
+  // call to `load` returns) if the code ahead of the first `await` throws
+  // synchronously, which is exactly the react-hooks/set-state-in-effect shape
+  // this file must not reintroduce. `.then`/`.catch`/`.finally` callbacks are
+  // guaranteed by the Promise spec to run as microtasks, never synchronously,
+  // regardless of when the underlying promise settles — so this form carries
+  // the same error handling with no synchronous path back into the effect.
+  const load = useCallback((date: string) => {
+    const seq = ++latestRequest.current;
+    return fetch(`/api/sphere360/week?date=${date}`)
+      .then(res => {
+        // A response is applied only if it belongs to the most recent
+        // request: a late reply for an older week must never overwrite a
+        // newer one, because the header would silently flip back while
+        // Confirm stayed live.
+        if (seq !== latestRequest.current) return;
+        if (!res.ok) {
+          setLoadError(`Could not load the week (HTTP ${res.status})`);
+          setData(null);
+          return;
+        }
+        return res.json().then((body: WeekResponse) => {
+          if (seq !== latestRequest.current) return;
+          setLoadError(null);
+          setData(body);
+          // Seed the editable copy from the server's draft on every load, so
+          // switching weeks never carries another week's edits across.
+          const seeded: Record<string, TimesheetEntry> = {};
+          for (const e of body.drafted) seeded[entryKey(e)] = { ...e };
+          setEdits(seeded);
+          setSubmit('idle');
+          setSubmitError(null);
+        });
+      })
+      .catch((err: unknown) => {
+        if (seq !== latestRequest.current) return;
+        setLoadError(err instanceof Error ? err.message : 'Could not load the week');
+        setData(null);
+      })
+      .finally(() => {
+        if (seq === latestRequest.current) setLoadedAnchor(date);
+      });
   }, []);
 
   useEffect(() => {
@@ -86,7 +120,7 @@ export function TimesheetWeek({ open, onOpenChange }: Props) {
   };
 
   const canConfirm =
-    !!data && data.mappingConfigured && !data.fetchError &&
+    !!data && data.mappingConfigured && !data.fetchError && !loading && !loadError &&
     drafted.length > 0 && drafted.every(e => e.projectId && e.activityId && Number(e.hours) > 0);
 
   const confirm = async () => {
@@ -143,6 +177,13 @@ export function TimesheetWeek({ open, onOpenChange }: Props) {
           </Button>
           {loading && <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />}
         </div>
+
+        {loadError && (
+          <div className="flex gap-2 rounded-md border border-red-300 bg-red-50 p-3 text-sm text-red-800">
+            <AlertCircle className="h-4 w-4 shrink-0" />
+            <span>{loadError}</span>
+          </div>
+        )}
 
         {data?.fetchError && (
           <div className="flex gap-2 rounded-md border border-amber-300 bg-amber-50 p-3 text-sm">
@@ -209,19 +250,20 @@ export function TimesheetWeek({ open, onOpenChange }: Props) {
                         <div className="flex items-center gap-2">
                           <select
                             className="rounded border px-2 py-1 text-sm"
-                            value={`${e.projectId ?? ''}|${e.activityId}`}
+                            value={data.projects.findIndex(
+                              p => p.projectId === e.projectId && p.activityId === e.activityId
+                            )}
                             onChange={ev => {
-                              const [projectId, activityId] = ev.target.value.split('|');
+                              const picked = data.projects[Number(ev.target.value)];
+                              if (!picked) return;
                               setEdits(prev => ({
                                 ...prev,
-                                [key]: { ...prev[key], projectId, activityId },
+                                [key]: { ...prev[key], projectId: picked.projectId, activityId: picked.activityId },
                               }));
                             }}
                           >
-                            {data.projects.map((p: ProjectOption) => (
-                              <option key={`${p.projectId}|${p.activityId}`} value={`${p.projectId}|${p.activityId}`}>
-                                {p.label}
-                              </option>
+                            {data.projects.map((p: ProjectOption, i: number) => (
+                              <option key={`${p.projectId}-${p.activityId}`} value={i}>{p.label}</option>
                             ))}
                           </select>
                           <input
