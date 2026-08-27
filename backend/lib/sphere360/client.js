@@ -50,7 +50,12 @@ function createClient({ fetchImpl = globalThis.fetch, baseUrl = BASE_URL } = {})
       const res = await fetchImpl(url, { method: 'GET', headers: h });
       await assertOk(res);
       const body = await res.json();
-      return Array.isArray(body) ? body : (body?.entries ?? []);
+      if (Array.isArray(body)) return body;
+      if (body && Array.isArray(body.entries)) return body.entries;
+      // An empty week must be PROVEN, never inferred from a shape we do not
+      // recognise. upsert replaces the whole week, so treating an unparseable
+      // body as "nothing is filed" would let the next confirm wipe it.
+      throw fail('SHAPE', 'Sphere360 returned a week in an unrecognised shape; refusing to treat it as empty');
     },
 
     // No retry, ever. This endpoint replaces a week; a retried POST after an

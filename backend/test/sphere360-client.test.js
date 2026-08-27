@@ -119,14 +119,54 @@ test('never puts the token in an error message', async () => {
   });
 });
 
-test('treats a null JSON body as an empty week rather than throwing', async () => {
-  // A 200 whose body is literally null must not escape the NO_TOKEN/AUTH/HTTP
-  // error contract with an uncoded TypeError — a later task maps those codes to
-  // HTTP statuses, and an uncoded throw would surface as a bare 500.
+test('rejects a null JSON body rather than inventing an empty week', async () => {
+  // An empty week must be PROVEN, never inferred. upsert REPLACES the week, so a
+  // body we cannot parse must block the write, not report "nothing is filed".
+  // The throw is coded ('SHAPE') so it stays inside the NO_TOKEN/AUTH/HTTP/SHAPE
+  // error contract the POST route maps to statuses — never a bare TypeError.
   await withToken('tok', async () => {
     const client = createClient({
       fetchImpl: async () => ({ ok: true, status: 200, json: async () => null, text: async () => 'null' }),
     });
+    await assert.rejects(() => client.fetchWeek('w'), (e) => e.code === 'SHAPE');
+  });
+});
+
+test('rejects a string body rather than inventing an empty week', async () => {
+  await withToken('tok', async () => {
+    const client = createClient({
+      fetchImpl: async () => ({ ok: true, status: 200, json: async () => 'no entries', text: async () => '"no entries"' }),
+    });
+    await assert.rejects(() => client.fetchWeek('w'), (e) => e.code === 'SHAPE');
+  });
+});
+
+test('rejects an object whose entries key is absent — a paginated or renamed envelope', async () => {
+  await withToken('tok', async () => {
+    const client = createClient({
+      fetchImpl: async () => ok({ data: [{ hours: 1 }], page: 1 })(),
+    });
+    await assert.rejects(() => client.fetchWeek('w'), (e) => e.code === 'SHAPE');
+  });
+});
+
+test('rejects an object whose entries value is not an array', async () => {
+  await withToken('tok', async () => {
+    const client = createClient({ fetchImpl: async () => ok({ entries: { '0': { hours: 1 } } })() });
+    await assert.rejects(() => client.fetchWeek('w'), (e) => e.code === 'SHAPE');
+  });
+});
+
+test('accepts a bare array as the week', async () => {
+  await withToken('tok', async () => {
+    const client = createClient({ fetchImpl: async () => ok([{ hours: 2 }])() });
+    assert.deepEqual(await client.fetchWeek('w'), [{ hours: 2 }]);
+  });
+});
+
+test('accepts an entries envelope, including a genuinely empty week', async () => {
+  await withToken('tok', async () => {
+    const client = createClient({ fetchImpl: async () => ok({ entries: [] })() });
     assert.deepEqual(await client.fetchWeek('w'), []);
   });
 });
