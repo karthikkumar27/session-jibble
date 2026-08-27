@@ -1,0 +1,77 @@
+const { test } = require('node:test');
+const assert = require('node:assert');
+const { mergeWeek, entryKey } = require('../lib/sphere360/merge');
+
+const scrum = { projectId: '1804361', activityId: 'act-scrum', workDate: '2026-08-26', hours: 1, comments: 'Daily scrum' };
+const social = { activityId: 'act-social', workDate: '2026-08-26', hours: 1, comments: 'ice creame party' };
+const meeting = { projectId: '1804361', activityId: 'act-meet', workDate: '2026-08-26', hours: 0.67, comments: 'infra sync' };
+const dev = { projectId: '1804361', activityId: 'act-dev', workDate: '2026-08-26', hours: 6.37, comments: 'web - FE tasks' };
+
+test('a filed row this app did not author survives the union verbatim', () => {
+  // THE most important test in this feature. If it ever fails, a week-replacing
+  // POST deletes the operator's meetings.
+  const { entries } = mergeWeek({ filed: [scrum, social, meeting], drafted: [dev] });
+
+  assert.equal(entries.length, 4);
+  for (const row of [scrum, social, meeting]) {
+    assert.ok(entries.some(e => JSON.stringify(e) === JSON.stringify(row)),
+      `filed row lost: ${row.comments}`);
+  }
+});
+
+test('an entry with no projectId still keys and survives', () => {
+  const { entries } = mergeWeek({ filed: [social], drafted: [] });
+  assert.deepEqual(entries, [social]);
+});
+
+test('a drafted row replaces the filed row sharing its key', () => {
+  const stale = { ...dev, hours: 5, comments: 'old text' };
+  const { entries, replaced } = mergeWeek({ filed: [scrum, stale], drafted: [dev] });
+
+  assert.equal(entries.length, 2);
+  assert.equal(replaced.length, 1);
+  assert.equal(entries.find(e => e.activityId === 'act-dev').hours, 6.37);
+  assert.ok(entries.some(e => e.activityId === 'act-scrum'));
+});
+
+test('every filed row lands in exactly one of entries or replaced', () => {
+  // The invariant that makes rule 1 checkable rather than merely intended.
+  const stale = { ...dev, hours: 5 };
+  const filed = [scrum, social, meeting, stale];
+  const { entries, replaced } = mergeWeek({ filed, drafted: [dev] });
+
+  for (const row of filed) {
+    const inEntries = entries.some(e => JSON.stringify(e) === JSON.stringify(row));
+    const inReplaced = replaced.some(e => JSON.stringify(e) === JSON.stringify(row));
+    assert.ok(inEntries !== inReplaced, `row neither kept nor replaced: ${JSON.stringify(row)}`);
+  }
+});
+
+test('an empty draft is a no-op that returns the week unchanged', () => {
+  const { entries, replaced } = mergeWeek({ filed: [scrum, social], drafted: [] });
+  assert.deepEqual(entries, [scrum, social]);
+  assert.deepEqual(replaced, []);
+});
+
+test('rows on different dates never collide', () => {
+  const tuesday = { ...dev, workDate: '2026-08-25' };
+  const { entries, replaced } = mergeWeek({ filed: [tuesday], drafted: [dev] });
+  assert.equal(entries.length, 2);
+  assert.deepEqual(replaced, []);
+});
+
+test('entryKey distinguishes a missing projectId from an empty one', () => {
+  assert.equal(entryKey(social), entryKey({ ...social, projectId: undefined }));
+  assert.notEqual(entryKey(social), entryKey({ ...social, projectId: '1804361' }));
+});
+
+test('throws rather than posting a union that lost a row', () => {
+  // Guards against a future refactor silently dropping filed rows.
+  // TWO filed rows and zero replacements: the forced union holds only the single
+  // drafted row, so 1 < 2 and the guard fires. With one filed row the threshold
+  // would equal the union size and this test could never fail.
+  assert.throws(
+    () => mergeWeek({ filed: [scrum, social], drafted: [dev], __forceDrop: true }),
+    /would drop/
+  );
+});
