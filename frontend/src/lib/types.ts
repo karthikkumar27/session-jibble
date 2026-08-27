@@ -75,3 +75,52 @@ export interface SessionDay {
   hours: number;
   session: Session;
 }
+
+// Sphere360 timesheet sync. `projectId` is optional because non-project rows
+// (leave, social) exist in the timesheet — this app never authors them, but it
+// must round-trip them untouched.
+export interface TimesheetEntry {
+  projectId?: string;
+  activityId: string;
+  workDate: string;
+  hours: number;
+  comments: string;
+}
+
+export interface DayTotals {
+  date: string;
+  isWorkday: boolean;  // false for Sat/Sun — the floor is a working-day concept
+  filedHours: number;
+  draftedHours: number;
+  totalHours: number;
+  shortBy: number;     // positive = below the floor; always 0 on a non-workday
+}
+
+export interface UnmappedFolder {
+  projectPath: string;
+  hours: number;
+}
+
+// Shape returned by GET /api/sphere360/week
+export interface ProjectOption {
+  label: string;
+  projectId: string;
+  activityId: string;
+}
+
+export interface WeekResponse {
+  monday: string;
+  weekStart: string;
+  dates: string[];
+  projects: ProjectOption[];
+  filed: TimesheetEntry[];
+  drafted: TimesheetEntry[];
+  replacedKeys: string[];
+  unmapped: UnmappedFolder[];
+  byDay: DayTotals[];
+  dailyMinimumHours: number;
+  resourceId: string;
+  mappingConfigured: boolean;
+  mappingError: string | null;
+  fetchError: { code: string; message: string } | null;
+}
