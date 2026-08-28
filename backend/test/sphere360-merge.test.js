@@ -1,6 +1,6 @@
 const { test } = require('node:test');
 const assert = require('node:assert');
-const { mergeWeek, entryKey, weekWritable } = require('../lib/sphere360/merge');
+const { mergeWeek, entryKey, weekWritable, foreignWorkDate } = require('../lib/sphere360/merge');
 
 const scrum = { projectId: '1804361', activityId: 'act-scrum', workDate: '2026-08-26', hours: 1, comments: 'Daily scrum' };
 const social = { activityId: 'act-social', workDate: '2026-08-26', hours: 1, comments: 'ice creame party' };
@@ -228,4 +228,21 @@ test('only a real boolean true unlocks a week', () => {
   // would read a LOCKED week as unlocked and write it.
   assert.equal(weekWritable({ status: 'SUBMITTED', isUnlocked: 'false' }), false);
   assert.equal(weekWritable({ status: 'SUBMITTED', isUnlocked: 1 }), false);
+});
+
+// --- Finding 1b: the union's identity, not just the request's -----------------
+// mergeWeek trusts every filed row's workDate. client.js's normalizeEntry()
+// only guarantees it is READABLE, never that it belongs to the week actually
+// requested. If the API ever ignored `weekStart`, a foreign-dated filed row
+// would ride the union straight into a POST that replaces THIS week.
+
+test('foreignWorkDate finds a union row outside the requested week', () => {
+  const dates = new Set(['2026-08-24', '2026-08-25', '2026-08-26', '2026-08-27', '2026-08-28', '2026-08-29', '2026-08-30']);
+  const outside = { ...dev, workDate: '2026-09-02' };
+  assert.equal(foreignWorkDate([dev, outside], dates), '2026-09-02');
+});
+
+test('foreignWorkDate returns null when every row belongs to the week', () => {
+  const dates = new Set(['2026-08-24', '2026-08-25', '2026-08-26']);
+  assert.equal(foreignWorkDate([dev, scrum], dates), null);
 });

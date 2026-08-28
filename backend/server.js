@@ -17,7 +17,7 @@ const {
   loadMapping, saveMapping, validateMapping,
 } = require('./lib/sphere360/mapping');
 const { buildDraft } = require('./lib/sphere360/draft');
-const { mergeWeek, entryKey, weekWritable } = require('./lib/sphere360/merge');
+const { mergeWeek, entryKey, weekWritable, foreignWorkDate } = require('./lib/sphere360/merge');
 const { createClient } = require('./lib/sphere360/client');
 
 const app = express();
@@ -570,6 +570,20 @@ app.post('/api/sphere360/week', async (req, res) => {
     }
 
     const { entries: union, replaced } = mergeWeek({ filed, drafted: entries });
+
+    // The union includes filed rows straight from the API, which the request
+    // validation above never saw. If the API ever returned something outside
+    // the week actually requested, refuse the whole write rather than file a
+    // foreign-dated row into it or silently drop it — 409 because unlocking or
+    // correcting the week and retrying is the recoverable path, and nothing
+    // about the request itself is malformed.
+    const foreign = foreignWorkDate(union, dates);
+    if (foreign) {
+      return res.status(409).json({
+        code: 'FOREIGN_DATE',
+        error: `Sphere360 returned a row dated ${foreign}, outside the week of ${mondayOf(date)}; the week was not written.`,
+      });
+    }
 
     await client.upsertWeek({
       weekStart: weekStartInstant(date),

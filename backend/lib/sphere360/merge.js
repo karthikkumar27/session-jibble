@@ -108,4 +108,22 @@ function weekWritable(week) {
   return week.status === 'DRAFT' || week.isUnlocked === true;
 }
 
-module.exports = { entryKey, mergeWeek, weekWritable };
+// The last check before a week-replacing write. mergeWeek trusts every filed
+// row's workDate — client.js's normalizeEntry() only guarantees it is
+// READABLE, never that it belongs to the week actually requested. If the API
+// ever ignored `weekStart`, or unwrapWeek's single-wrapper assumption were ever
+// wrong, a foreign-dated filed row would ride the union straight into a POST
+// that replaces THIS week. Checked against the union, not the request, because
+// it must cover every row going out — including filed rows the route itself
+// never validated, not just the client-supplied ones.
+//
+// Returns the first offending workDate, or null when every row belongs to the
+// week. A date, not a boolean: the caller's 409 must name what was wrong.
+function foreignWorkDate(entries, dates) {
+  for (const row of entries) {
+    if (!dates.has(row.workDate)) return row.workDate;
+  }
+  return null;
+}
+
+module.exports = { entryKey, mergeWeek, weekWritable, foreignWorkDate };
