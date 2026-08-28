@@ -1,6 +1,6 @@
 const { test } = require('node:test');
 const assert = require('node:assert');
-const { mondayOf, weekStartInstant, weekDates } = require('../lib/sphere360/week');
+const { mondayOf, weekStartInstant, weekDates, workDateOf } = require('../lib/sphere360/week');
 
 test('mondayOf returns the same Monday for every day of that week', () => {
   for (const d of ['2026-08-24', '2026-08-26', '2026-08-30']) {
@@ -56,4 +56,58 @@ test('rejects a calendar-invalid date instead of normalising it into another wee
   assert.throws(() => mondayOf('2025-02-29'), /YYYY-MM-DD/);
   // A real leap day still passes.
   assert.equal(mondayOf('2028-02-29'), '2028-02-28');
+});
+
+// --- workDateOf ---------------------------------------------------------------
+// The API is asymmetric: it RETURNS workDate as a UTC-midnight instant and
+// ACCEPTS a bare local date on write. entryKey compares workDate verbatim, so
+// without a normalisation on read a filed row can never collide with a drafted
+// one, and a confirm files duplicates instead of replacements.
+
+const withTZ = (tz, fn) => {
+  const prev = process.env.TZ;
+  process.env.TZ = tz;
+  try { fn(); } finally {
+    if (prev === undefined) delete process.env.TZ; else process.env.TZ = prev;
+  }
+};
+
+test('workDateOf normalises a UTC-midnight instant to its calendar date', () => {
+  assert.equal(workDateOf('2026-08-26T00:00:00.000Z'), '2026-08-26');
+});
+
+test('workDateOf passes a bare local date through unchanged', () => {
+  assert.equal(workDateOf('2026-08-26'), '2026-08-26');
+});
+
+test('workDateOf takes the instant UTC parts, never the local ones', () => {
+  // THE D2 proof. Reading the instant with local getters returns 2026-08-25 in
+  // any zone west of UTC: every filed row in New York would land on the
+  // previous day, colliding with the wrong drafted row — or with none, leaving
+  // the real one to be posted as a duplicate. Asserted from a negative-offset
+  // zone precisely because the ambient machine is UTC+8, where a local read
+  // happens to give the right answer and proves nothing.
+  withTZ('America/New_York', () => {
+    assert.equal(workDateOf('2026-08-26T00:00:00.000Z'), '2026-08-26');
+  });
+  // And symmetrically east of UTC, where a local read overshoots.
+  withTZ('Pacific/Kiritimati', () => {
+    assert.equal(workDateOf('2026-08-26T23:00:00.000Z'), '2026-08-26');
+  });
+});
+
+test('workDateOf refuses anything that is neither a date nor an instant', () => {
+  // A workDate we cannot read is not a row we can safely key, and an unkeyed
+  // filed row is one the merge cannot protect from a week-replacing POST.
+  for (const bad of [null, undefined, 42, '', 'yesterday', '26-08-2026', '2026-08-26T00:00', {}]) {
+    assert.throws(() => workDateOf(bad), /workDate/, `accepted ${JSON.stringify(bad)}`);
+  }
+});
+
+test('workDateOf rejects a calendar-invalid instant instead of sliding it a day', () => {
+  // Date.parse normalises '2026-02-30T00:00:00.000Z' to Mar 2 rather than
+  // failing — the same trap assertLocalDate already closes for bare dates.
+  assert.throws(() => workDateOf('2026-02-30T00:00:00.000Z'), /workDate/);
+  assert.throws(() => workDateOf('2026-02-30'), /YYYY-MM-DD|workDate/);
+  assert.equal(workDateOf('2028-02-29T00:00:00.000Z'), '2028-02-29');
 });

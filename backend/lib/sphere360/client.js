@@ -5,6 +5,8 @@
 // backend/.env mid-session and the very next request must pick it up without a
 // server restart.
 
+const { workDateOf } = require('./week');
+
 const BASE_URL = 'https://sphere360.airasia.com';
 
 // Update these two if Task 1's probe observed different paths.
@@ -47,6 +49,25 @@ async function assertOk(res) {
 // Returns the week metadata alongside the entries rather than the entries
 // alone: only the wrapper carries `status`/`isUnlocked`, and the write path
 // must refuse a week that is not writable.
+// workDate is normalised here, at the edge, so nothing downstream ever sees an
+// instant: the API returns '2026-08-26T00:00:00.000Z' but accepts '2026-08-26'
+// on write, and entryKey compares the field verbatim. One un-normalised row is
+// a collision the merge cannot see and a duplicate the operator did not ask
+// for. Every other field is carried through untouched — id, timesheetId,
+// isBillable and activity belong to rows this app did not author, and the
+// round trip must return them exactly as they arrived.
+//
+// A workDate we cannot read is refused as SHAPE rather than allowed through
+// unkeyable: it stays inside the NO_TOKEN/AUTH/HTTP/SHAPE contract the POST
+// route maps to statuses, and it blocks the write instead of risking one.
+function normalizeEntry(entry) {
+  try {
+    return { ...entry, workDate: workDateOf(entry?.workDate) };
+  } catch (err) {
+    throw fail('SHAPE', `Sphere360 returned an entry with an unreadable workDate: ${err.message}`);
+  }
+}
+
 function unwrapWeek(body) {
   // An empty array is a PROVEN empty week — the probe confirmed a resource with
   // no timesheet for the week returns []. This is the only body from which
@@ -55,7 +76,7 @@ function unwrapWeek(body) {
 
   const week = Array.isArray(body) ? body[0] : body;
   if (week && typeof week === 'object' && Array.isArray(week.entries)) {
-    return { week, entries: week.entries };
+    return { week, entries: week.entries.map(normalizeEntry) };
   }
 
   // An empty week must otherwise be PROVEN, never inferred from a shape we do

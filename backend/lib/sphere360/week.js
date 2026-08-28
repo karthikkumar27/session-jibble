@@ -58,4 +58,32 @@ function weekDates(localDate) {
   return Array.from({ length: 7 }, (_, i) => fromParts(start + i * 86_400_000));
 }
 
-module.exports = { mondayOf, weekStartInstant, weekDates };
+// Sphere360 is asymmetric about workDate: it RETURNS a UTC-midnight instant
+// ('2026-08-26T00:00:00.000Z') but ACCEPTS a bare local date ('2026-08-26') on
+// write. entryKey compares workDate verbatim, so without a normalisation on
+// read a filed row can never collide with a drafted one: every collision goes
+// undetected and a confirm files duplicates instead of replacements.
+//
+// The parts must be taken in UTC. Reading the instant with local getters —
+// new Date(v).getDate() — returns the PREVIOUS day everywhere west of UTC, so
+// every filed row would key onto the wrong date. This module is the one place
+// allowed to make that distinction, which is why the helper lives here and not
+// in client.js.
+const INSTANT_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/;
+
+function workDateOf(value) {
+  if (typeof value === 'string' && DATE_RE.test(value)) {
+    assertLocalDate(value);       // a bare date still may not be calendar-invalid
+    return value;
+  }
+  if (typeof value === 'string' && INSTANT_RE.test(value)) {
+    const out = fromParts(Date.parse(value));   // fromParts reads UTC parts
+    // Date.parse normalises '2026-02-30T00:00:00.000Z' to Mar 2 rather than
+    // failing, exactly as Date.UTC does for bare dates. Round-tripping the
+    // instant back to its own leading date is what proves no day was invented.
+    if (out === value.slice(0, 10)) return out;
+  }
+  throw new Error(`Unusable workDate ${JSON.stringify(value)}: expected YYYY-MM-DD or a UTC instant`);
+}
+
+module.exports = { mondayOf, weekStartInstant, weekDates, workDateOf };

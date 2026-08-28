@@ -1,6 +1,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert');
 const { createClient } = require('../lib/sphere360/client');
+const { mergeWeek } = require('../lib/sphere360/merge');
 
 // async + await on purpose: a synchronous try/finally around an async fn restores
 // the environment BEFORE the awaited body runs, so every assertion inside would
@@ -246,5 +247,50 @@ test('refuses an array whose first element is not a week wrapper', async () => {
   await withToken('tok', async () => {
     const client = createClient({ fetchImpl: async () => ok([{ hours: 2, workDate: '2026-08-26' }])() });
     await assert.rejects(() => client.fetchWeek('w'), (e) => e.code === 'SHAPE');
+  });
+});
+
+test('normalises every filed workDate on read, so a filed row can be collided with', async () => {
+  // The D2 regression, end to end. The API returns workDate as an instant and
+  // accepts a bare date on write; entryKey compares verbatim. Un-normalised,
+  // the drafted row below matches nothing, mergeWeek keeps the filed row AND
+  // appends the drafted one, and the confirm files the same hour twice.
+  await withToken('tok', async () => {
+    const client = createClient({ fetchImpl: async () => ok([weekWrapper()])() });
+    const { entries } = await client.fetchWeek('w');
+    assert.equal(entries[0].workDate, '2026-08-26');
+
+    const drafted = {
+      projectId: '1804361',
+      activityId: '78a50647-4a54-4264-83c0-7ab092c19c94',
+      workDate: '2026-08-26',
+      hours: 2,
+      comments: 'Daily scrum',
+    };
+    const { entries: union, replaced } = mergeWeek({ filed: entries, drafted: [drafted] });
+    assert.equal(replaced.length, 1, 'the filed instant did not collide with the drafted date');
+    assert.equal(union.length, 1, 'the same work was filed twice');
+  });
+});
+
+test('refuses a filed row whose workDate cannot be read', async () => {
+  // Coded SHAPE, not a bare TypeError: an unreadable workDate means the row
+  // cannot be keyed, and an unkeyable filed row is one mergeWeek cannot protect
+  // from a week-replacing POST. It must block the write through the same
+  // NO_TOKEN/AUTH/HTTP/SHAPE contract the POST route maps to statuses.
+  await withToken('tok', async () => {
+    const bad = weekWrapper({ entries: [{ ...filedEntry, workDate: 'last Tuesday' }] });
+    const client = createClient({ fetchImpl: async () => ok([bad])() });
+    await assert.rejects(() => client.fetchWeek('w'), (e) => e.code === 'SHAPE');
+  });
+});
+
+test('normalisation leaves every other field on a filed row untouched', async () => {
+  // D3 depends on this: id, timesheetId, isBillable and activity must survive
+  // the read, or the round trip strips them from rows we did not author.
+  await withToken('tok', async () => {
+    const client = createClient({ fetchImpl: async () => ok([weekWrapper()])() });
+    const { entries } = await client.fetchWeek('w');
+    assert.deepEqual(entries[0], { ...filedEntry, workDate: '2026-08-26' });
   });
 });
