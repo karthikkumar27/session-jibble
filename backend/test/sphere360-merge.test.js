@@ -116,3 +116,73 @@ test('a missing and an empty projectId still key identically', () => {
     entryKey({ workDate: '2026-08-26', projectId: '', activityId: 'act-social' }),
   );
 });
+
+// --- D3: identity through the round trip --------------------------------------
+// The probe found filed entries carry `id` and `timesheetId`, plus `isBillable`
+// and a nested `activity`. Posting back only our five fields would strip them.
+
+const filedDev = {
+  id: 'entry-77',
+  timesheetId: 'ts-9',
+  projectId: '1804361',
+  activityId: 'act-dev',
+  workDate: '2026-08-26',
+  hours: 5,
+  comments: 'yesterday text',
+  activity: { isBillable: true },
+  isBillable: true,
+};
+
+test('a drafted row superseding a filed row inherits its id and timesheetId', () => {
+  // Without this the write is a delete-and-recreate: the filed row's id vanishes
+  // from the posted array, so the server destroys row entry-77 and inserts a new
+  // one. Any reference to it — an approval trail, an export already sent — is
+  // broken to change one number. Carrying the id makes it an update in place.
+  const { entries, replaced } = mergeWeek({ filed: [filedDev], drafted: [dev] });
+
+  assert.equal(replaced.length, 1);
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0].id, 'entry-77');
+  assert.equal(entries[0].timesheetId, 'ts-9');
+  // Ours are the values that change; the identity is all we borrow.
+  assert.equal(entries[0].hours, 6.37);
+  assert.equal(entries[0].comments, 'web - FE tasks');
+});
+
+test('inheriting an id does not mutate the filed row it came from', () => {
+  // `replaced` is rendered struck through in the UI. If the union aliased the
+  // filed object, editing hours would rewrite the row shown as superseded and
+  // the operator would compare a number against itself.
+  const filed = { ...filedDev };
+  const { entries } = mergeWeek({ filed: [filed], drafted: [dev] });
+  assert.equal(filed.hours, 5);
+  assert.equal(filed.comments, 'yesterday text');
+  assert.notEqual(entries[0], filed);
+});
+
+test('a drafted row matching nothing is posted with no id — a genuine insert', () => {
+  // The guard against over-broad inheritance: an id borrowed from a row that is
+  // NOT being superseded would overwrite that row and delete this work.
+  const { entries } = mergeWeek({ filed: [filedDev], drafted: [{ ...dev, activityId: 'act-new' }] });
+  const insert = entries.find(e => e.activityId === 'act-new');
+  assert.equal(insert.id, undefined);
+  assert.equal(insert.timesheetId, undefined);
+});
+
+test('a filed row we keep is posted back with every field it arrived with', () => {
+  // A standing guard, not a new behaviour: kept rows already survive by
+  // identity. D3 adds cloning to the drafted path, and an over-broad clone —
+  // or a "post only our five fields" normalisation — would silently strip
+  // isBillable and activity from rows this app did not author.
+  const { entries } = mergeWeek({ filed: [filedDev], drafted: [] });
+  assert.equal(entries[0], filedDev);
+  assert.deepEqual(entries[0], filedDev);
+});
+
+test('a drafted row carries no id when the filed row it replaces has none', () => {
+  // Rows filed before ids existed, or a shape change: inheriting `undefined`
+  // must not turn an update into a payload with an explicit null id.
+  const { entries } = mergeWeek({ filed: [{ ...dev, hours: 5 }], drafted: [dev] });
+  assert.ok(!('id' in entries[0]));
+  assert.ok(!('timesheetId' in entries[0]));
+});
