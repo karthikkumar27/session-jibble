@@ -100,14 +100,16 @@ test('workDateOf refuses anything that is neither a date nor an instant', () => 
   // A workDate we cannot read is not a row we can safely key, and an unkeyed
   // filed row is one the merge cannot protect from a week-replacing POST.
   for (const bad of [null, undefined, 42, '', 'yesterday', '26-08-2026', '2026-08-26T00:00', {}]) {
-    assert.throws(() => workDateOf(bad), /workDate/, `accepted ${JSON.stringify(bad)}`);
+    // /Unusable workDate/, not /workDate/: the looser pattern also matches
+    // "workDateOf is not a function", so it passed before the helper existed.
+    assert.throws(() => workDateOf(bad), /Unusable workDate/, `accepted ${JSON.stringify(bad)}`);
   }
 });
 
 test('workDateOf rejects a calendar-invalid instant instead of sliding it a day', () => {
   // Date.parse normalises '2026-02-30T00:00:00.000Z' to Mar 2 rather than
   // failing — the same trap assertLocalDate already closes for bare dates.
-  assert.throws(() => workDateOf('2026-02-30T00:00:00.000Z'), /workDate/);
-  assert.throws(() => workDateOf('2026-02-30'), /YYYY-MM-DD|workDate/);
+  assert.throws(() => workDateOf('2026-02-30T00:00:00.000Z'), /Unusable workDate/);
+  assert.throws(() => workDateOf('2026-02-30'), /YYYY-MM-DD/);
   assert.equal(workDateOf('2028-02-29T00:00:00.000Z'), '2028-02-29');
 });

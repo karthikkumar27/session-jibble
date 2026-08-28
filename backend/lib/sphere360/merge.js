@@ -62,13 +62,16 @@ function mergeWeek({ filed = [], drafted = [], __forceDrop = false }) {
     (draftedKeys.has(entryKey(row)) ? replaced : kept).push(row);
   }
 
-  // Kept rows go into the union by identity, never rebuilt from a field list:
-  // they are Sphere360's rows, carrying isBillable, activity and anything a
-  // future API version adds, and this endpoint replaces the week with exactly
-  // what it is posted. Reconstructing them would silently strip whatever we
-  // did not think to copy.
+  // Each drafted row picks up the identity of the filed row it supersedes, if
+  // any, so the write updates that row rather than destroying and recreating it.
   const owned = drafted.map(row => inheritIdentity(row, ownerByKey.get(entryKey(row))));
 
+  // Kept rows enter by identity, never rebuilt from a field list: they are
+  // Sphere360's rows, carrying isBillable, activity and anything a future API
+  // version adds, and this endpoint replaces the week with exactly what it is
+  // posted. Reconstructing them would silently strip whatever we did not think
+  // to copy.
+  //
   // __forceDrop exists only so the invariant below is provably live in tests.
   // Nothing in production sets it.
   const entries = __forceDrop ? [...owned] : [...kept, ...owned];

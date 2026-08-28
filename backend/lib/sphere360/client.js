@@ -39,16 +39,6 @@ async function assertOk(res) {
   throw fail('HTTP', `Sphere360 returned ${res.status}${body ? `: ${body}` : ''}`, res.status);
 }
 
-// The probe of 2026-08-28 settled the envelope: this endpoint returns an ARRAY
-// OF WEEK OBJECTS, each carrying its rows nested under `.entries` — never an
-// array of entries. The old `Array.isArray(body) ? body : ...` took the first
-// branch and handed week wrappers back as if they were entries, and the SHAPE
-// guard could not catch it, because an array IS a legitimate shape. A shape
-// guard only helps against shapes it can tell apart.
-//
-// Returns the week metadata alongside the entries rather than the entries
-// alone: only the wrapper carries `status`/`isUnlocked`, and the write path
-// must refuse a week that is not writable.
 // workDate is normalised here, at the edge, so nothing downstream ever sees an
 // instant: the API returns '2026-08-26T00:00:00.000Z' but accepts '2026-08-26'
 // on write, and entryKey compares the field verbatim. One un-normalised row is
@@ -68,6 +58,16 @@ function normalizeEntry(entry) {
   }
 }
 
+// The probe of 2026-08-28 settled the envelope: this endpoint returns an ARRAY
+// OF WEEK OBJECTS, each carrying its rows nested under `.entries` — never an
+// array of entries. The old `Array.isArray(body) ? body : ...` took the first
+// branch and handed week wrappers back as if they were entries, and the SHAPE
+// guard could not catch it, because an array IS a legitimate shape. A shape
+// guard only helps against shapes it can tell apart.
+//
+// Returns the week metadata alongside the entries rather than the entries
+// alone: only the wrapper carries `status`/`isUnlocked`, and the write path
+// must refuse a week that is not writable.
 function unwrapWeek(body) {
   // An empty array is a PROVEN empty week — the probe confirmed a resource with
   // no timesheet for the week returns []. This is the only body from which
