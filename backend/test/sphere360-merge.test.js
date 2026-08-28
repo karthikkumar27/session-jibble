@@ -1,6 +1,6 @@
 const { test } = require('node:test');
 const assert = require('node:assert');
-const { mergeWeek, entryKey, weekWritable, foreignWorkDate } = require('../lib/sphere360/merge');
+const { mergeWeek, entryKey, weekWritable, stripClientIdentity, foreignWorkDate } = require('../lib/sphere360/merge');
 
 const scrum = { projectId: '1804361', activityId: 'act-scrum', workDate: '2026-08-26', hours: 1, comments: 'Daily scrum' };
 const social = { activityId: 'act-social', workDate: '2026-08-26', hours: 1, comments: 'ice creame party' };
@@ -245,4 +245,30 @@ test('foreignWorkDate finds a union row outside the requested week', () => {
 test('foreignWorkDate returns null when every row belongs to the week', () => {
   const dates = new Set(['2026-08-24', '2026-08-25', '2026-08-26']);
   assert.equal(foreignWorkDate([dev, scrum], dates), null);
+});
+
+// --- Finding 2: identity is never accepted from the request body --------------
+// inheritIdentity only ever ADDS an id to a row it matched by key — it never
+// clears one a row already carried. A row matching nothing would otherwise
+// pass through with whatever id it arrived with, and Sphere360 would read
+// that as "update this row" for a filed row this app never looked at.
+
+test('stripClientIdentity removes id and timesheetId from every entry', () => {
+  const withIdentity = { ...dev, id: 'entry-999', timesheetId: 'ts-999' };
+  const [stripped] = stripClientIdentity([withIdentity]);
+  assert.ok(!('id' in stripped));
+  assert.ok(!('timesheetId' in stripped));
+  assert.equal(stripped.hours, dev.hours);
+  assert.equal(stripped.workDate, dev.workDate);
+});
+
+test('a client-supplied id cannot smuggle an update to an arbitrary filed row', () => {
+  // Without stripClientIdentity, this row keeps the id it arrived with — it
+  // matches nothing by key, so inheritIdentity's `!owner` branch returns it
+  // unchanged — and Sphere360 would overwrite entry-77 with unrelated work.
+  const smuggled = { ...dev, activityId: 'act-new', id: 'entry-77' };
+  const [clean] = stripClientIdentity([smuggled]);
+  const { entries } = mergeWeek({ filed: [filedDev], drafted: [clean] });
+  const insert = entries.find(e => e.activityId === 'act-new');
+  assert.equal(insert.id, undefined);
 });

@@ -108,6 +108,18 @@ function weekWritable(week) {
   return week.status === 'DRAFT' || week.isUnlocked === true;
 }
 
+// The route's client-trust boundary. Nothing this app sends carries an id or
+// timesheetId today — draft.js emits five fields — but a row that arrived
+// from the request already carrying one would pass straight through
+// inheritIdentity() unchanged whenever it matches no filed row (inheritIdentity
+// only ever ADDS an id, it never clears one), and Sphere360 would read that id
+// as "update this row" for a filed row this app never looked up. Identity must
+// be assigned only by inheritIdentity, from a filed row mergeWeek actually
+// matched by key — never accepted from the request body.
+function stripClientIdentity(entries) {
+  return entries.map(({ id, timesheetId, ...rest }) => rest);
+}
+
 // The last check before a week-replacing write. mergeWeek trusts every filed
 // row's workDate — client.js's normalizeEntry() only guarantees it is
 // READABLE, never that it belongs to the week actually requested. If the API
@@ -126,4 +138,4 @@ function foreignWorkDate(entries, dates) {
   return null;
 }
 
-module.exports = { entryKey, mergeWeek, weekWritable, foreignWorkDate };
+module.exports = { entryKey, mergeWeek, weekWritable, stripClientIdentity, foreignWorkDate };

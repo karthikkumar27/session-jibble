@@ -17,7 +17,7 @@ const {
   loadMapping, saveMapping, validateMapping,
 } = require('./lib/sphere360/mapping');
 const { buildDraft } = require('./lib/sphere360/draft');
-const { mergeWeek, entryKey, weekWritable, foreignWorkDate } = require('./lib/sphere360/merge');
+const { mergeWeek, entryKey, weekWritable, stripClientIdentity, foreignWorkDate } = require('./lib/sphere360/merge');
 const { createClient } = require('./lib/sphere360/client');
 
 const app = express();
@@ -512,10 +512,16 @@ app.get('/api/sphere360/week', async (req, res) => {
 // a stale union would erase anything edited in Sphere360's own UI meanwhile.
 app.post('/api/sphere360/week', async (req, res) => {
   try {
-    const { date, entries } = req.body || {};
-    if (!date || !Array.isArray(entries)) {
+    const { date, entries: rawEntries } = req.body || {};
+    if (!date || !Array.isArray(rawEntries)) {
       return res.status(400).json({ error: 'Body must be { date, entries[] }' });
     }
+
+    // Identity is assigned only by mergeWeek, from a filed row it matched by
+    // key — never accepted from the request. Nothing sends id/timesheetId
+    // today, but a row that did would otherwise pass through untouched and
+    // could overwrite an arbitrary filed row instead of the one it matches.
+    const entries = stripClientIdentity(rawEntries);
 
     const { mapping } = loadMapping();
     if (!mapping.resourceId) {
