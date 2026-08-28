@@ -429,10 +429,13 @@ app.get('/api/sphere360/week', async (req, res) => {
     const dates = weekDates(anchor);
     const { mapping, error: mappingError } = loadMapping();
 
+    // fetchWeek returns { week, entries }: the wrapper is not decoration, it is
+    // the only carrier of the week's status. Destructuring the entries out of it
+    // is what stops week wrappers being merged as if they were rows.
     let filed = [];
     let fetchError = null;
     try {
-      filed = await createClient().fetchWeek(weekStartInstant(anchor));
+      ({ entries: filed } = await createClient().fetchWeek(weekStartInstant(anchor)));
     } catch (err) {
       fetchError = { code: err.code, message: err.message };
     }
@@ -535,7 +538,7 @@ app.post('/api/sphere360/week', async (req, res) => {
     }
 
     const client = createClient();
-    const filed = await client.fetchWeek(weekStartInstant(date));
+    const { entries: filed } = await client.fetchWeek(weekStartInstant(date));
     const { entries: union, replaced } = mergeWeek({ filed, drafted: entries });
 
     await client.upsertWeek({

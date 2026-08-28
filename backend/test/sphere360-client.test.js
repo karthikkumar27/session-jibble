@@ -38,12 +38,15 @@ test('sends the bearer header and returns parsed entries', async () => {
   await withToken('tok123', async () => {
     let seen;
     const client = createClient({
-      fetchImpl: async (url, init) => { seen = { url, init }; return ok({ entries: [{ hours: 1 }] })(); },
+      fetchImpl: async (url, init) => {
+        seen = { url, init };
+        return ok({ entries: [{ hours: 1, workDate: '2026-08-26' }] })();
+      },
     });
-    const entries = await client.fetchWeek('2026-08-24T00:00:00.000Z');
+    const { entries } = await client.fetchWeek('2026-08-24T00:00:00.000Z');
     assert.equal(seen.init.headers.authorization, 'Bearer tok123');
     assert.match(seen.url, /2026-08-24T00%3A00%3A00.000Z|2026-08-24T00:00:00.000Z/);
-    assert.deepEqual(entries, [{ hours: 1 }]);
+    assert.deepEqual(entries, [{ hours: 1, workDate: '2026-08-26' }]);
   });
 });
 
@@ -157,16 +160,91 @@ test('rejects an object whose entries value is not an array', async () => {
   });
 });
 
-test('accepts a bare array as the week', async () => {
+test('accepts an entries envelope, including a genuinely empty week', async () => {
   await withToken('tok', async () => {
-    const client = createClient({ fetchImpl: async () => ok([{ hours: 2 }])() });
-    assert.deepEqual(await client.fetchWeek('w'), [{ hours: 2 }]);
+    const body = { entries: [] };
+    const client = createClient({ fetchImpl: async () => ok(body)() });
+    assert.deepEqual(await client.fetchWeek('w'), { week: body, entries: [] });
   });
 });
 
-test('accepts an entries envelope, including a genuinely empty week', async () => {
+// --- The observed envelope (probe, 2026-08-28) -------------------------------
+// GET /api/timesheets returns an ARRAY OF WEEK OBJECTS, each carrying its
+// entries nested under `.entries`. Every fixture below is built from that shape.
+
+const filedEntry = {
+  id: 'entry-1',
+  timesheetId: 'ts-1',
+  activityId: '78a50647-4a54-4264-83c0-7ab092c19c94',
+  projectId: '1804361',
+  workDate: '2026-08-26T00:00:00.000Z',
+  hours: 1,
+  comments: 'Daily scrum',
+  activity: { isBillable: true },
+  isBillable: true,
+};
+
+const weekWrapper = (overrides = {}) => ({
+  id: 'ts-1',
+  resourceId: 'res-1',
+  weekStart: '2026-08-24T00:00:00.000Z',
+  status: 'DRAFT',
+  submittedAt: null,
+  approvedAt: null,
+  approvedBy: null,
+  remarks: null,
+  isUnlocked: false,
+  resource: { id: 'res-1' },
+  entries: [filedEntry],
+  ...overrides,
+});
+
+test('unwraps the observed envelope to the NESTED entries, not the week wrappers', async () => {
+  // The D1 regression. `Array.isArray(body) ? body : …` took the first branch —
+  // the body IS an array, just of week objects — so `filed` became one wrapper
+  // with no workDate and no hours. The SHAPE guard never fired, because an
+  // array is a legitimate shape. mergeWeek would then post that wrapper back
+  // as if it were an entry, into an endpoint that replaces the whole week.
   await withToken('tok', async () => {
-    const client = createClient({ fetchImpl: async () => ok({ entries: [] })() });
-    assert.deepEqual(await client.fetchWeek('w'), []);
+    const client = createClient({ fetchImpl: async () => ok([weekWrapper()])() });
+    const { week, entries } = await client.fetchWeek('w');
+
+    assert.equal(entries.length, 1);
+    assert.equal(entries[0].id, 'entry-1');
+    assert.equal(entries[0].hours, 1);
+    // The wrapper must never appear among the entries.
+    assert.ok(!entries.some(e => Array.isArray(e.entries)), 'a week wrapper leaked into entries');
+    assert.equal(week.status, 'DRAFT');
+    assert.equal(week.isUnlocked, false);
+  });
+});
+
+test('an empty array is a genuinely empty week, not an unparseable one', async () => {
+  // The probe confirmed a week with no timesheet returns []. That is a proven
+  // "nothing filed", so it must NOT be refused the way an unknown shape is.
+  await withToken('tok', async () => {
+    const client = createClient({ fetchImpl: async () => ok([])() });
+    assert.deepEqual(await client.fetchWeek('w'), { week: null, entries: [] });
+  });
+});
+
+test('tolerates a bare week object as the body', async () => {
+  await withToken('tok', async () => {
+    const body = weekWrapper();
+    const client = createClient({ fetchImpl: async () => ok(body)() });
+    const { week, entries } = await client.fetchWeek('w');
+    assert.equal(week, body);
+    assert.equal(entries.length, 1);
+    assert.equal(entries[0].id, 'entry-1');
+  });
+});
+
+test('refuses an array whose first element is not a week wrapper', async () => {
+  // A bare array of entry-shaped rows was accepted before D1 and is exactly how
+  // the bug hid. If the API ever changes back, that is a shape change we must
+  // see, not silently absorb — the next confirm replaces the whole week.
+  await withToken('tok', async () => {
+    const client = createClient({ fetchImpl: async () => ok([{ hours: 2, workDate: '2026-08-26' }])() });
+    await assert.rejects(() => client.fetchWeek('w'), (e) => e.code === 'SHAPE');
   });
 });

@@ -37,6 +37,33 @@ async function assertOk(res) {
   throw fail('HTTP', `Sphere360 returned ${res.status}${body ? `: ${body}` : ''}`, res.status);
 }
 
+// The probe of 2026-08-28 settled the envelope: this endpoint returns an ARRAY
+// OF WEEK OBJECTS, each carrying its rows nested under `.entries` — never an
+// array of entries. The old `Array.isArray(body) ? body : ...` took the first
+// branch and handed week wrappers back as if they were entries, and the SHAPE
+// guard could not catch it, because an array IS a legitimate shape. A shape
+// guard only helps against shapes it can tell apart.
+//
+// Returns the week metadata alongside the entries rather than the entries
+// alone: only the wrapper carries `status`/`isUnlocked`, and the write path
+// must refuse a week that is not writable.
+function unwrapWeek(body) {
+  // An empty array is a PROVEN empty week — the probe confirmed a resource with
+  // no timesheet for the week returns []. This is the only body from which
+  // "nothing is filed" may be inferred.
+  if (Array.isArray(body) && body.length === 0) return { week: null, entries: [] };
+
+  const week = Array.isArray(body) ? body[0] : body;
+  if (week && typeof week === 'object' && Array.isArray(week.entries)) {
+    return { week, entries: week.entries };
+  }
+
+  // An empty week must otherwise be PROVEN, never inferred from a shape we do
+  // not recognise. upsert replaces the whole week, so treating an unparseable
+  // body as "nothing is filed" would let the next confirm wipe it.
+  throw fail('SHAPE', 'Sphere360 returned a week in an unrecognised shape; refusing to treat it as empty');
+}
+
 function createClient({ fetchImpl = globalThis.fetch, baseUrl = BASE_URL } = {}) {
   const headers = () => ({
     authorization: `Bearer ${readToken()}`,
@@ -44,18 +71,13 @@ function createClient({ fetchImpl = globalThis.fetch, baseUrl = BASE_URL } = {})
   });
 
   return {
+    // -> { week: object|null, entries: array }
     async fetchWeek(weekStart) {
       const h = headers();
       const url = `${baseUrl}${WEEK_PATH}?weekStart=${encodeURIComponent(weekStart)}`;
       const res = await fetchImpl(url, { method: 'GET', headers: h });
       await assertOk(res);
-      const body = await res.json();
-      if (Array.isArray(body)) return body;
-      if (body && Array.isArray(body.entries)) return body.entries;
-      // An empty week must be PROVEN, never inferred from a shape we do not
-      // recognise. upsert replaces the whole week, so treating an unparseable
-      // body as "nothing is filed" would let the next confirm wipe it.
-      throw fail('SHAPE', 'Sphere360 returned a week in an unrecognised shape; refusing to treat it as empty');
+      return unwrapWeek(await res.json());
     },
 
     // No retry, ever. This endpoint replaces a week; a retried POST after an
