@@ -304,6 +304,88 @@ Each has a documented safe assumption; the probe confirms or corrects it.
 The probe is read-only: fetch the week, decode the JWT locally, read the taxonomy
 endpoint. Nothing is posted.
 
+## Probe findings — 2026-08-28
+
+The read-only probe ran against the live API. It confirmed the endpoint path and
+**invalidated the assumed response envelope**. Four of the five assumptions were
+wrong or incomplete.
+
+| Question | Assumed | Observed |
+|---|---|---|
+| Week GET path | `/api/timesheets?weekStart=…` | **Confirmed.** 200 JSON. Variants `/week` and `/entries` return 500. |
+| Response envelope | an array of entries, or `{entries: […]}` | **Wrong.** An array of *timesheet week* objects. Entries are nested at `[0].entries`. |
+| Entries carry a stable `id` | assumed no | **Yes** — `id` and `timesheetId` on every entry. |
+| Activity taxonomy endpoint | expected one | **None exists.** All nine candidate paths 404/500. |
+| Token TTL | ~1 h | **~24 h** (`exp - iat` = 86400 s). |
+| Upsert replace-vs-merge | replaces | **Still unknown** — cannot be established read-only, and will not be tested by writing. |
+
+### The envelope, precisely
+
+```
+[ { id, resourceId, weekStart, status, submittedAt, approvedAt, approvedBy,
+    remarks, isUnlocked, resource,
+    entries: [ { id, timesheetId, activityId, projectId, workDate, hours,
+                 comments, activity: { isBillable }, isBillable } ] } ]
+```
+
+A week with no timesheet returns `[]`, so an empty array genuinely means "nothing
+filed" rather than a shape we failed to parse.
+
+### Defects this exposes in the shipped code
+
+**D1 — Critical. `client.js` returns week wrappers as if they were entries.**
+`Array.isArray(body) ? body : (body?.entries ?? …)` takes the first branch, because
+the body *is* an array — just not an array of entries. `filed` becomes a single
+week-wrapper object. The `SHAPE` guard added in the final fix wave does not catch
+this: the body is a legitimate array, so the guard passes. Correct unwrap is
+`body[0]?.entries ?? []`.
+
+**D2 — Critical. `workDate` is asymmetric between read and write.**
+The API *returns* `"2026-08-26T00:00:00.000Z"` but the upsert payload *accepts*
+`"2026-08-26"`. `entryKey` compares `workDate` verbatim, so a filed row can never
+match a drafted one: every collision goes undetected, and a confirm would file
+duplicates rather than replacements. Filed `workDate` must be normalised to a
+local `YYYY-MM-DD` on read.
+
+**D3 — Important. Ownership should move to `id`.**
+Entries carry a stable `id`. The spec already anticipated this: "If yes, switch
+rule 2 to id-based ownership; strictly safer." Round-tripping must also preserve
+`id`, `timesheetId`, `isBillable` and `activity` on rows we did not author —
+posting back only our five fields would strip them.
+
+**D4 — Important. Week status is unmodelled.**
+Weeks carry `status` (observed `DRAFT`), `isUnlocked`, `submittedAt`, `approvedAt`.
+Nothing in the sync consults them. A submitted or approved week must not be written.
+
+**D5 — Good news. Attribution is far more tractable than assumed.**
+`/api/projects` exists and returns the user's projects **as TRIP tickets** — the
+exact dimension `docs/billing-accuracy-plan.md` decision 7 called unrecoverable:
+
+```
+2683083  TRIP-1220  Tail Assignment (MAA) Enhancements   [Suspended]
+2268293  TRIP-1108  Crew Pairing & Rostering Optimizer   [Canceled]
+1804361  TRIP-1043  SkyIQ 2.0 AIMS Replacement           [Project Started]
+2224454  TRIP-1102  Tail Assignment (TAA)                [Closed]
+```
+
+Four projects, one active. Decision 7 assumed 661 TRIP projects and a searchable
+picker; the reachable set for this user is one. The mapping file can be seeded
+from this endpoint rather than hand-written.
+
+**D6 — Activity ids stay hand-maintained.** No taxonomy endpoint exists, and the
+embedded `activity` object carries only `isBillable`, no name. This is the spec's
+documented fallback. Known ids, harvested from real entries:
+
+```
+78a50647-4a54-4264-83c0-7ab092c19c94  billable    (used for "Daily scrum")
+5dbfdeb3-f41e-42c0-8410-d2d1725c1041  billable    (used for development work)
+385cf27f-6276-4472-9119-31a16b0aeecf  billable    (used for meetings)
+6a3a6f34-d8fa-4b0b-adbd-14a718d5a4d5  non-billable (used for social)
+```
+
+**D7 — The ~24 h token makes an unattended mode technically possible.** It stays
+rejected on posture grounds: writes to a system of record get a human.
+
 ## Out of scope
 
 - The four billing-accuracy corrections. Consumed through `hoursFor` when they land.
