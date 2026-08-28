@@ -1,6 +1,6 @@
 const { test } = require('node:test');
 const assert = require('node:assert');
-const { mergeWeek, entryKey } = require('../lib/sphere360/merge');
+const { mergeWeek, entryKey, weekWritable } = require('../lib/sphere360/merge');
 
 const scrum = { projectId: '1804361', activityId: 'act-scrum', workDate: '2026-08-26', hours: 1, comments: 'Daily scrum' };
 const social = { activityId: 'act-social', workDate: '2026-08-26', hours: 1, comments: 'ice creame party' };
@@ -185,4 +185,47 @@ test('a drafted row carries no id when the filed row it replaces has none', () =
   const { entries } = mergeWeek({ filed: [{ ...dev, hours: 5 }], drafted: [dev] });
   assert.ok(!('id' in entries[0]));
   assert.ok(!('timesheetId' in entries[0]));
+});
+
+// --- D4: a week that is not writable ------------------------------------------
+// Weeks carry status, isUnlocked, submittedAt and approvedAt. Nothing consulted
+// them, so a confirm would happily replace a week already submitted for
+// approval — silently reopening or corrupting a record someone signed off.
+
+test('a week with no timesheet yet is writable', () => {
+  // The common case: nothing filed, [] came back, there is nothing to protect.
+  assert.equal(weekWritable(null), true);
+  assert.equal(weekWritable(undefined), true);
+});
+
+test('a DRAFT week is writable', () => {
+  assert.equal(weekWritable({ status: 'DRAFT', isUnlocked: false }), true);
+});
+
+test('a submitted or approved week is not writable', () => {
+  assert.equal(weekWritable({ status: 'SUBMITTED', isUnlocked: false }), false);
+  assert.equal(weekWritable({ status: 'APPROVED', isUnlocked: false }), false);
+});
+
+test('an unlocked week is writable whatever its status', () => {
+  // Unlocking is the operator's own act in Sphere360 — the one signal that a
+  // non-DRAFT week is open for edits again.
+  assert.equal(weekWritable({ status: 'SUBMITTED', isUnlocked: true }), true);
+});
+
+test('a status this code does not recognise fails closed', () => {
+  // Refusing to write is recoverable — the operator unlocks the week and
+  // retries. Writing a week we cannot classify is not: the endpoint replaces
+  // it. Every unknown must therefore land on the refusing side, including a
+  // case mismatch and an absent status.
+  assert.equal(weekWritable({ status: 'PENDING_APPROVAL', isUnlocked: false }), false);
+  assert.equal(weekWritable({ status: 'draft', isUnlocked: false }), false);
+  assert.equal(weekWritable({}), false);
+});
+
+test('only a real boolean true unlocks a week', () => {
+  // JSON from another system: 'false' is a truthy string, and a loose check
+  // would read a LOCKED week as unlocked and write it.
+  assert.equal(weekWritable({ status: 'SUBMITTED', isUnlocked: 'false' }), false);
+  assert.equal(weekWritable({ status: 'SUBMITTED', isUnlocked: 1 }), false);
 });

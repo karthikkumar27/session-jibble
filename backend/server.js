@@ -17,7 +17,7 @@ const {
   loadMapping, saveMapping, validateMapping,
 } = require('./lib/sphere360/mapping');
 const { buildDraft } = require('./lib/sphere360/draft');
-const { mergeWeek, entryKey } = require('./lib/sphere360/merge');
+const { mergeWeek, entryKey, weekWritable } = require('./lib/sphere360/merge');
 const { createClient } = require('./lib/sphere360/client');
 
 const app = express();
@@ -420,6 +420,16 @@ app.put('/api/sphere360/mapping', (req, res) => {
   }
 });
 
+// The week's own state, as the UI needs it. `writable` is sent decided rather
+// than as raw fields for the frontend to re-derive: the rule that governs the
+// write lives on the server, and a second copy of it in TypeScript is a second
+// copy to drift.
+function weekSummary(week) {
+  if (!week) return null;
+  const { status = null, isUnlocked = null, submittedAt = null, approvedAt = null } = week;
+  return { status, isUnlocked, submittedAt, approvedAt, writable: weekWritable(week) };
+}
+
 // Reads a week and returns it merged in preview: what is filed, what this app
 // would draft, and what the day totals become. Nothing is written.
 app.get('/api/sphere360/week', async (req, res) => {
@@ -433,9 +443,10 @@ app.get('/api/sphere360/week', async (req, res) => {
     // the only carrier of the week's status. Destructuring the entries out of it
     // is what stops week wrappers being merged as if they were rows.
     let filed = [];
+    let filedWeek = null;
     let fetchError = null;
     try {
-      ({ entries: filed } = await createClient().fetchWeek(weekStartInstant(anchor)));
+      ({ week: filedWeek, entries: filed } = await createClient().fetchWeek(weekStartInstant(anchor)));
     } catch (err) {
       fetchError = { code: err.code, message: err.message };
     }
@@ -477,6 +488,10 @@ app.get('/api/sphere360/week', async (req, res) => {
       // per billing-accuracy decision 7: attribution is a human step.
       projects: mapping.projects.map(({ label, projectId, activityId }) =>
         ({ label, projectId, activityId })),
+      // null when no timesheet exists for the week — a state the UI must be able
+      // to tell apart from a locked one, since it is the freest state, not the
+      // most restricted.
+      week: weekSummary(filedWeek),
       filed,
       drafted,
       replacedKeys,
@@ -538,7 +553,22 @@ app.post('/api/sphere360/week', async (req, res) => {
     }
 
     const client = createClient();
-    const { entries: filed } = await client.fetchWeek(weekStartInstant(date));
+    const { week, entries: filed } = await client.fetchWeek(weekStartInstant(date));
+
+    // Checked on the re-read, not on the draft the operator loaded: the week may
+    // have been submitted minutes ago, and this endpoint replaces it wholesale.
+    // 409, because nothing about the request is malformed — the week's state
+    // conflicts with it, and unlocking the week in Sphere360 makes the same
+    // request valid. Evaluated BEFORE upsertWeek, so a refusal writes nothing.
+    if (!weekWritable(week)) {
+      const state = week.status ? `is ${week.status}` : 'is in an unrecognised state';
+      return res.status(409).json({
+        code: 'NOT_WRITABLE',
+        error: `The Sphere360 week of ${mondayOf(date)} ${state} and is not unlocked, so it cannot be filed from here. Unlock or reopen it in Sphere360 and try again.`,
+        week: weekSummary(week),
+      });
+    }
+
     const { entries: union, replaced } = mergeWeek({ filed, drafted: entries });
 
     await client.upsertWeek({

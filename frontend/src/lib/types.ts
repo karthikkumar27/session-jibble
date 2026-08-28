@@ -108,10 +108,24 @@ export interface ProjectOption {
   activityId: string;
 }
 
+// Sphere360's own state for the week. The server sends `writable` already
+// decided rather than the raw fields alone: the rule that governs the write
+// lives on the server, and a second copy of it here is a second copy to drift.
+export interface WeekState {
+  status: string | null;
+  isUnlocked: boolean | null;
+  submittedAt: string | null;
+  approvedAt: string | null;
+  writable: boolean;
+}
+
 export interface WeekResponse {
   monday: string;
   weekStart: string;
   dates: string[];
+  // null when no timesheet exists for the week yet — the freest state, not the
+  // most restricted, so it must not be conflated with a locked one.
+  week: WeekState | null;
   projects: ProjectOption[];
   filed: TimesheetEntry[];
   drafted: TimesheetEntry[];

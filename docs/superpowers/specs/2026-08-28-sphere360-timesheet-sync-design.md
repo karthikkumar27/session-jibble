@@ -357,6 +357,36 @@ posting back only our five fields would strip them.
 Weeks carry `status` (observed `DRAFT`), `isUnlocked`, `submittedAt`, `approvedAt`.
 Nothing in the sync consults them. A submitted or approved week must not be written.
 
+### How each defect was closed — 2026-08-28
+
+**D1.** `fetchWeek` returns `{ week, entries }`. It discriminates on the nested
+`entries` array rather than on `Array.isArray(body)`, because an array of weeks
+and an array of entries are both arrays — the old SHAPE guard was not wrong, it
+was under-specified. An empty array stays a proven empty week; an array whose
+first element is not a week wrapper is now refused.
+
+**D2.** `workDateOf` in `week.js` — the one module allowed UTC/ISO handling —
+normalises a filed `workDate` to a bare local date on read, taking the instant's
+**UTC** calendar parts. A local read (`new Date(v).getDate()`) returns the
+previous day everywhere west of UTC; the regression test asserts this from
+`America/New_York`, since on a UTC+8 machine a local read gives the right answer
+by accident. The instant is round-tripped to its own leading date so
+`Date.parse` cannot slide `2026-02-30T00:00:00.000Z` to Mar 2.
+
+**D3.** A drafted row that supersedes a filed one inherits that row's `id` and
+`timesheetId`, so the write updates in place instead of destroying the row and
+inserting a replacement. A drafted row matching nothing inherits nothing. Kept
+rows enter the union by identity and are never rebuilt from a field list, so
+`isBillable` and `activity` survive the round trip.
+
+**D4.** `weekWritable(week)` in `merge.js`: `null` (no timesheet yet) is
+writable, otherwise `status === 'DRAFT' || isUnlocked === true`. Everything
+unrecognised fails closed — refusing is recoverable, writing a week we could not
+classify is not. `GET /api/sphere360/week` reports the week's state with
+`writable` already decided; `POST` re-reads, evaluates it, and returns **409**
+before `upsertWeek` is ever called. The sheet disables Confirm and names the
+status. No condition on day totals was added: a short day stays a prompt.
+
 **D5 — Good news. Attribution is far more tractable than assumed.**
 `/api/projects` exists and returns the user's projects **as TRIP tickets** — the
 exact dimension `docs/billing-accuracy-plan.md` decision 7 called unrecoverable:

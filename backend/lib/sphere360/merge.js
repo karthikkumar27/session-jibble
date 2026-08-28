@@ -87,4 +87,22 @@ function mergeWeek({ filed = [], drafted = [], __forceDrop = false }) {
   return { entries, replaced, kept };
 }
 
-module.exports = { entryKey, mergeWeek };
+// Weeks carry status, isUnlocked, submittedAt and approvedAt, and until now
+// nothing consulted them — a confirm would have replaced a week already
+// submitted for approval, silently reopening or corrupting a signed-off record.
+//
+// A week with no timesheet yet is writable: [] is a proven empty week and there
+// is nothing to protect. Everything else must be DRAFT, or unlocked by the
+// operator's own act in Sphere360.
+//
+// The test is exact on both fields, and everything unrecognised fails closed.
+// Refusing is recoverable — unlock the week and retry — while writing a week we
+// could not classify is not, because the endpoint replaces it. `=== true` and
+// not a truthy check: JSON from another system renders 'false' as a truthy
+// string, and a loose read of it would write a locked week.
+function weekWritable(week) {
+  if (week === null || week === undefined) return true;
+  return week.status === 'DRAFT' || week.isUnlocked === true;
+}
+
+module.exports = { entryKey, mergeWeek, weekWritable };

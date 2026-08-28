@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { AlertCircle, Check, ChevronLeft, ChevronRight, Loader2 } from 'lucide-react';
+import { AlertCircle, Check, ChevronLeft, ChevronRight, Loader2, Lock } from 'lucide-react';
 import { Sheet, SheetContent, SheetTitle, SheetDescription } from '@/components/ui/sheet';
 import { Button } from '@/components/ui/button';
 import type { ProjectOption, TimesheetEntry, WeekResponse } from '@/lib/types';
@@ -133,8 +133,16 @@ export function TimesheetWeek({ open, onOpenChange }: Props) {
     return parseFloat((filed + mine).toFixed(2));
   };
 
+  // A week already submitted or approved is not ours to replace: the POST
+  // endpoint carries the whole week, so filing into one would reopen or corrupt
+  // a record someone signed off. The server refuses it with a 409 regardless —
+  // this only stops the operator sending a request that cannot succeed. No
+  // condition on shortBy or day totals belongs here: a short day is a prompt to
+  // look, not a reason to block filing.
+  const weekWritable = !data?.week || data.week.writable;
+
   const canConfirm =
-    !!data && data.mappingConfigured && !data.fetchError && !loading && !loadError &&
+    !!data && data.mappingConfigured && !data.fetchError && !loading && !loadError && weekWritable &&
     drafted.length > 0 && drafted.every(e => e.projectId && e.activityId && Number(e.hours) > 0);
 
   const confirm = async () => {
@@ -203,6 +211,17 @@ export function TimesheetWeek({ open, onOpenChange }: Props) {
           <div className="flex gap-2 rounded-md border border-amber-300 bg-amber-50 p-3 text-sm">
             <AlertCircle className="h-4 w-4 shrink-0 text-amber-600" />
             <span>{data.fetchError.message}</span>
+          </div>
+        )}
+
+        {data?.week && !data.week.writable && (
+          <div className="flex gap-2 rounded-md border border-amber-300 bg-amber-50 p-3 text-sm">
+            <Lock className="h-4 w-4 shrink-0 text-amber-600" />
+            <span>
+              Sphere360 has this week as{' '}
+              <strong>{data.week.status ?? 'an unrecognised status'}</strong> and not unlocked, so it
+              cannot be filed from here. Unlock or reopen it in Sphere360 first.
+            </span>
           </div>
         )}
 
