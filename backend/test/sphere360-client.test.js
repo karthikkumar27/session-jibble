@@ -250,6 +250,22 @@ test('refuses an array whose first element is not a week wrapper', async () => {
   });
 });
 
+test('refuses more than one week wrapper for a single week request', async () => {
+  // One `weekStart` query must return at most one week. The old `body[0]` took
+  // the first wrapper unconditionally — if the API ever ignored the query, or
+  // returned neighbouring weeks too, this would silently pick one and drop the
+  // rest, and the dropped wrapper's rows would never even reach mergeWeek's
+  // own protections.
+  await withToken('tok', async () => {
+    const client = createClient({ fetchImpl: async () => ok([weekWrapper(), weekWrapper({ id: 'ts-2' })])() });
+    await assert.rejects(() => client.fetchWeek('w'), (e) => {
+      assert.equal(e.code, 'SHAPE');
+      assert.match(e.message, /2/);
+      return true;
+    });
+  });
+});
+
 test('normalises every filed workDate on read, so a filed row can be collided with', async () => {
   // The D2 regression, end to end. The API returns workDate as an instant and
   // accepts a bare date on write; entryKey compares verbatim. Un-normalised,

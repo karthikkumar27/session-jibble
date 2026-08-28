@@ -74,6 +74,15 @@ function unwrapWeek(body) {
   // "nothing is filed" may be inferred.
   if (Array.isArray(body) && body.length === 0) return { week: null, entries: [] };
 
+  // One `weekStart` query must return at most one week. The old `body[0]` took
+  // the first wrapper unconditionally: if the API ever ignored the query, or
+  // returned neighbouring weeks too, this would silently pick one and drop the
+  // rest — and the dropped wrapper's rows never even reach mergeWeek's own
+  // protections. A count we cannot make sense of is refused, not guessed at.
+  if (Array.isArray(body) && body.length > 1) {
+    throw fail('SHAPE', `Sphere360 returned ${body.length} week wrappers for one week request; refusing to guess which is correct`);
+  }
+
   const week = Array.isArray(body) ? body[0] : body;
   if (week && typeof week === 'object' && Array.isArray(week.entries)) {
     return { week, entries: week.entries.map(normalizeEntry) };
