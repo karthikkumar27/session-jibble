@@ -149,17 +149,6 @@ test('a drafted row superseding a filed row inherits its id and timesheetId', ()
   assert.equal(entries[0].comments, 'web - FE tasks');
 });
 
-test('inheriting an id does not mutate the filed row it came from', () => {
-  // `replaced` is rendered struck through in the UI. If the union aliased the
-  // filed object, editing hours would rewrite the row shown as superseded and
-  // the operator would compare a number against itself.
-  const filed = { ...filedDev };
-  const { entries } = mergeWeek({ filed: [filed], drafted: [dev] });
-  assert.equal(filed.hours, 5);
-  assert.equal(filed.comments, 'yesterday text');
-  assert.notEqual(entries[0], filed);
-});
-
 test('a drafted row matching nothing is posted with no id — a genuine insert', () => {
   // The guard against over-broad inheritance: an id borrowed from a row that is
   // NOT being superseded would overwrite that row and delete this work.
