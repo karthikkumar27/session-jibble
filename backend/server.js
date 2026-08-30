@@ -14,7 +14,7 @@ try { process.loadEnvFile(path.join(__dirname, '.env')); } catch { /* no .env ye
 
 const { weekDates, mondayOf, weekStartInstant } = require('./lib/sphere360/week');
 const {
-  loadMapping, saveMapping, validateMapping,
+  loadMapping, saveMapping, validateMapping, resolveDailyMinimum,
 } = require('./lib/sphere360/mapping');
 const { buildDraft } = require('./lib/sphere360/draft');
 const { mergeWeek, entryKey, weekWritable, stripClientIdentity, foreignWorkDate } = require('./lib/sphere360/merge');
@@ -458,7 +458,11 @@ app.get('/api/sphere360/week', async (req, res) => {
     const { entries: preview, replaced } = mergeWeek({ filed, drafted });
     const replacedKeys = replaced.map(entryKey);
 
-    const minimum = mapping.dailyMinimumHours;
+    // The floor itself: Sphere360's own weeklyCapacityHours (on filedWeek.resource)
+    // beats the mapping's configured fallback whenever a timesheet exists for the
+    // week. dailyMinimumSource rides along in the response so the UI is never
+    // silently wrong about which one produced the number on screen.
+    const { hours: minimum, source: dailyMinimumSource } = resolveDailyMinimum(mapping, filedWeek);
     const byDay = dates.map((date, i) => {
       const on = (list) => list.filter(e => e.workDate === date)
         .reduce((sum, e) => sum + (Number(e.hours) || 0), 0);
@@ -498,6 +502,7 @@ app.get('/api/sphere360/week', async (req, res) => {
       unmapped,
       byDay,
       dailyMinimumHours: minimum,
+      dailyMinimumSource,
       resourceId: mapping.resourceId,
       mappingConfigured: mapping.projects.length > 0 && Boolean(mapping.resourceId),
       mappingError,
