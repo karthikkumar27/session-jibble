@@ -176,6 +176,43 @@ current engine ~25% high, and those corrections have not landed. `draft.js` take
 hours through an injected `hoursFor()`, so the corrected engine drops in without
 touching the sync. The UI labels every drafted row until then.
 
+#### The Jibble cutover (`syncFrom`)
+Jibble was the operator's timesheet of record **through 2026-08-25**. Sphere360
+took over from **2026-08-26**, and that first day was **entered by hand**. So
+`syncFrom` stands at **2026-08-27** in `~/.claude/session-jibble.timesheet.json`,
+and the sync never drafts or writes a row dated earlier — even though the hours
+it measured on those days are real and correctly measured.
+
+That refusal is the whole point. 2026-08-24 (6.14h) and 2026-08-25 (1.28h)
+drafted cleanly against the live API, and confirming that week would have
+written 7.42h into a period already closed and reconciled in a *different*
+system. The failure mode is not a wrong number; it is two systems of record
+disagreeing about days nobody can now adjudicate.
+
+The existing writability guard structurally cannot catch this: Sphere360 tracks
+`status`/`submittedAt` per **week**, and the week of 24 Aug is `DRAFT` and
+writable. Nothing in the API knows the Jibble boundary exists — only we do.
+
+Three layers hold it, and all three are wanted:
+- `mapping.js` validates the optional `syncFrom` — a `YYYY-MM-DD` checked for
+  calendar validity through `week.js`'s own `isValidLocalDate`, never a second
+  copy of that check — and answers `beforeCutover(date, mapping)`. **Absent
+  means no cutover**, never a default: an operator who never set one must not
+  silently lose days.
+- `draft.js` excludes those dates and returns them as
+  `beforeCutover: [{ date, hours }]`. Excluded, never dropped — a day that
+  measured work and drafted nothing must say why, exactly as `unmapped` does.
+- `POST /api/sphere360/week` refuses with **409 `BEFORE_CUTOVER`** before any
+  network call, and re-checks the merged union next to the `foreignWorkDate`
+  guard: upsert replaces the week wholesale, so a row already filed inside the
+  Jibble period would be re-written by a confirm this app never drafted. The
+  draft filter is the default; the route's refusal is the guarantee.
+
+The comparison is a plain string compare — `YYYY-MM-DD` sorts in calendar order,
+as the rest of this feature already relies on. Do not "improve" it into date
+parsing: that reintroduces the UTC/local distinction `week.js` exists to
+contain, and a boundary off by one day reopens a closed period.
+
 #### The billable-progress card (the 26th-to-25th cycle)
 `GET /api/sphere360/cycle` reproduces Sphere360's own "MY BILLABLE PROGRESS"
 card. The period is **not** a calendar month: it runs the 26th of one month to
