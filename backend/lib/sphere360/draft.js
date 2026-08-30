@@ -1,6 +1,6 @@
 const path = require('path');
 const { weekDates } = require('./week');
-const { resolveProject } = require('./mapping');
+const { resolveProject, beforeCutover } = require('./mapping');
 
 const round2 = (n) => parseFloat(n.toFixed(2));
 
@@ -17,6 +17,9 @@ function buildDraft({ anyDateInWeek, sessions = [], mapping, hoursFor }) {
   const groups = new Map();
   // projectPath -> Set<date>, so an unmapped folder is counted once per day
   const unmappedDays = new Map();
+  // date -> Set<projectPath> for days the cutover excludes, so an excluded day
+  // is reported once with everything measured on it.
+  const excludedDays = new Map();
 
   for (const session of sessions) {
     const { projectPath, excerpt } = session;
@@ -24,6 +27,16 @@ function buildDraft({ anyDateInWeek, sessions = [], mapping, hoursFor }) {
 
     for (const date of session.dates ?? []) {
       if (!inWeek.has(date)) continue;
+
+      // Checked BEFORE resolveProject, so an excluded day is never also
+      // reported as unmapped: the day is out of this system's scope whatever
+      // folder it came from, and "add a mapping for this folder" would be
+      // advice that changes nothing. One absence, one explanation.
+      if (beforeCutover(date, mapping)) {
+        if (!excludedDays.has(date)) excludedDays.set(date, new Set());
+        excludedDays.get(date).add(projectPath);
+        continue;
+      }
 
       const project = resolveProject(projectPath, mapping);
       if (!project) {
@@ -86,7 +99,20 @@ function buildDraft({ anyDateInWeek, sessions = [], mapping, hoursFor }) {
     .filter(u => u.hours > 0)
     .sort((a, b) => b.hours - a.hours || a.projectPath.localeCompare(b.projectPath));
 
-  return { entries, unmapped };
+  // Excluded, never dropped. Silence is what the `unmapped` list exists to
+  // avoid: a day that measured real work and drafted nothing must say why, or
+  // it reads as a bug in the measurement. Hours are summed per distinct
+  // projectPath for the same reason the groups above are — two sessions in one
+  // repo on one day describe one block of time.
+  const excluded = [...excludedDays.entries()]
+    .map(([date, paths]) => ({
+      date,
+      hours: round2([...paths].reduce((sum, p) => sum + (hoursFor(p, date) || 0), 0)),
+    }))
+    .filter(d => d.hours > 0)
+    .sort((a, b) => a.date.localeCompare(b.date));
+
+  return { entries, unmapped, beforeCutover: excluded };
 }
 
 module.exports = { buildDraft };

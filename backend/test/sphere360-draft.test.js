@@ -140,3 +140,122 @@ test('rounds summed hours to two decimals', () => {
   });
   assert.equal(entries[0].hours, 0.67);
 });
+
+// --- the Jibble cutover ------------------------------------------------------
+// Everything before 2026-08-27 belongs to a period already reconciled in
+// Jibble (2026-08-26 was hand-entered into Sphere360), so it must never be
+// drafted. It must also never be silently dropped: an absence with no
+// explanation is the exact failure the `unmapped` list exists to prevent, so
+// excluded days come back with their measured hours for the UI to explain.
+
+const cutoverMapping = { ...mapping, syncFrom: '2026-08-27' };
+
+test('never drafts a date before the cutover, and reports it instead of dropping it', () => {
+  const { entries, beforeCutover } = buildDraft({
+    anyDateInWeek: '2026-08-26',
+    sessions: [
+      { projectPath: '/work/skyiq/web', sessionId: 's1', excerpt: 'jibble era', dates: ['2026-08-24'] },
+      { projectPath: '/work/skyiq/web', sessionId: 's2', excerpt: 'sphere era', dates: ['2026-08-27'] },
+    ],
+    mapping: cutoverMapping,
+    hoursFor: hours({ '/work/skyiq/web|2026-08-24': 6.14, '/work/skyiq/web|2026-08-27': 3 }),
+  });
+
+  assert.deepEqual(entries.map(e => e.workDate), ['2026-08-27']);
+  assert.deepEqual(beforeCutover, [{ date: '2026-08-24', hours: 6.14 }]);
+});
+
+test('the live case: the whole Jibble tail of the week is reported, never drafted', () => {
+  // These are the figures verified against the live API — confirming this week
+  // without the cutover would write 7.42h into an accounting period closed in
+  // a different system.
+  const { entries, beforeCutover } = buildDraft({
+    anyDateInWeek: '2026-08-26',
+    sessions: [
+      { projectPath: '/work/skyiq/web', sessionId: 's1', excerpt: 'mon', dates: ['2026-08-24'] },
+      { projectPath: '/work/skyiq/web', sessionId: 's2', excerpt: 'tue', dates: ['2026-08-25'] },
+    ],
+    mapping: cutoverMapping,
+    hoursFor: hours({ '/work/skyiq/web|2026-08-24': 6.14, '/work/skyiq/web|2026-08-25': 1.28 }),
+  });
+
+  assert.deepEqual(entries, []);
+  assert.deepEqual(beforeCutover, [
+    { date: '2026-08-24', hours: 6.14 },
+    { date: '2026-08-25', hours: 1.28 },
+  ]);
+});
+
+test('the cutover date itself is drafted — the boundary is inclusive', () => {
+  const { entries, beforeCutover } = buildDraft({
+    anyDateInWeek: '2026-08-26',
+    sessions: [
+      { projectPath: '/work/skyiq/web', sessionId: 's1', excerpt: 'first synced day', dates: ['2026-08-27'] },
+    ],
+    mapping: cutoverMapping,
+    hoursFor: hours({ '/work/skyiq/web|2026-08-27': 4 }),
+  });
+
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0].workDate, '2026-08-27');
+  assert.deepEqual(beforeCutover, []);
+});
+
+test('sums every repo active on an excluded day into one reported figure', () => {
+  const { beforeCutover } = buildDraft({
+    anyDateInWeek: '2026-08-26',
+    sessions: [
+      { projectPath: '/work/skyiq/web', sessionId: 's1', excerpt: 'a', dates: ['2026-08-25'] },
+      { projectPath: '/work/scrum/notes', sessionId: 's2', excerpt: 'b', dates: ['2026-08-25'] },
+    ],
+    mapping: cutoverMapping,
+    hoursFor: hours({ '/work/skyiq/web|2026-08-25': 2.5, '/work/scrum/notes|2026-08-25': 1.25 }),
+  });
+
+  assert.deepEqual(beforeCutover, [{ date: '2026-08-25', hours: 3.75 }]);
+});
+
+test('omits an excluded day that measured nothing', () => {
+  // Same rule the unmapped list follows: a zero is not an absence worth
+  // explaining, and a row of "0.00 h" is noise on every pre-cutover day.
+  const { beforeCutover } = buildDraft({
+    anyDateInWeek: '2026-08-26',
+    sessions: [
+      { projectPath: '/work/skyiq/web', sessionId: 's1', excerpt: 'a', dates: ['2026-08-25'] },
+    ],
+    mapping: cutoverMapping,
+    hoursFor: hours({}),
+  });
+
+  assert.deepEqual(beforeCutover, []);
+});
+
+test('an unmapped folder on an excluded day is reported as pre-cutover, not as unmapped', () => {
+  // One absence, one explanation. "Add a mapping for this folder" would be
+  // advice that changes nothing: the day is out of scope whatever it maps to.
+  const { unmapped, beforeCutover } = buildDraft({
+    anyDateInWeek: '2026-08-26',
+    sessions: [
+      { projectPath: '/home/me/side-project', sessionId: 's1', excerpt: 'a', dates: ['2026-08-25'] },
+    ],
+    mapping: cutoverMapping,
+    hoursFor: hours({ '/home/me/side-project|2026-08-25': 0.4 }),
+  });
+
+  assert.deepEqual(unmapped, []);
+  assert.deepEqual(beforeCutover, [{ date: '2026-08-25', hours: 0.4 }]);
+});
+
+test('excludes nothing when the mapping states no cutover', () => {
+  const { entries, beforeCutover } = buildDraft({
+    anyDateInWeek: '2026-08-26',
+    sessions: [
+      { projectPath: '/work/skyiq/web', sessionId: 's1', excerpt: 'a', dates: ['2026-08-24'] },
+    ],
+    mapping,
+    hoursFor: hours({ '/work/skyiq/web|2026-08-24': 6.14 }),
+  });
+
+  assert.equal(entries.length, 1);
+  assert.deepEqual(beforeCutover, []);
+});
