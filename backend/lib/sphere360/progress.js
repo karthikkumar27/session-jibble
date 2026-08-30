@@ -14,7 +14,7 @@
 // figure is partial rather than say nothing.
 
 const { workingDaysIn, elapsedWorkingDays } = require('./cycle');
-const { resolveDailyMinimum } = require('./mapping');
+const { resolveDailyMinimum, toPositiveFiniteNumber } = require('./mapping');
 
 const round2 = (n) => parseFloat(n.toFixed(2));
 const round1 = (n) => parseFloat(n.toFixed(1));
@@ -76,8 +76,10 @@ function summarizeCycle({ cycle, today, weeks = [], mapping }) {
   // sensible default exists (8); a utilisation target does not — inventing 73
   // would put a number on the card that Sphere360 never said. null renders as
   // "—" rather than as a target the operator might be judged against.
-  const rawTarget = resourceWeek?.resource?.targetUtilization;
-  const targetPercent = (typeof rawTarget === 'number' && Number.isFinite(rawTarget)) ? rawTarget : null;
+  //
+  // toPositiveFiniteNumber (mapping.js), not a bare typeof check: Sphere360
+  // serves targetUtilization as a string ("73") on the live API.
+  const targetPercent = toPositiveFiniteNumber(resourceWeek?.resource?.targetUtilization);
 
   const workingDays = workingDaysIn(start, end);
   const elapsed = elapsedWorkingDays(start, today, end);

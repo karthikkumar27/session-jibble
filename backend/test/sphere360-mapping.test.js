@@ -5,7 +5,7 @@ const os = require('os');
 const path = require('path');
 const {
   DEFAULT_MAPPING, validateMapping, loadMapping, saveMapping, resolveProject,
-  isHoliday, resolveDailyMinimum,
+  isHoliday, resolveDailyMinimum, toPositiveFiniteNumber,
 } = require('../lib/sphere360/mapping');
 
 const tmpFile = () =>
@@ -257,5 +257,35 @@ test('resolveDailyMinimum falls back to the config value when weeklyCapacityHour
     const result = resolveDailyMinimum(mapping, { resource: { weeklyCapacityHours: bad } });
     assert.equal(result.source, 'config', `accepted ${JSON.stringify(bad)}`);
     assert.equal(result.hours, 7);
+  }
+});
+
+// Sphere360 serialises weeklyCapacityHours as a STRING on the live API
+// ("40", typeof string) — verified against the live endpoint. A guard of
+// `typeof capacity === 'number'` rejects that real value outright and falls
+// through to the config fallback, which only looks right because 40 / 5 = 8
+// happens to match the default. Anyone whose capacity is not 40 would get a
+// silently wrong number with the old guard.
+test('resolveDailyMinimum accepts weeklyCapacityHours sent as a numeric string, as Sphere360 sends it live', () => {
+  const { mapping } = validateMapping({ ...valid, dailyMinimumHours: 6 });
+  const week = { resource: { weeklyCapacityHours: '40' } };
+  const result = resolveDailyMinimum(mapping, week);
+  assert.equal(result.source, 'sphere360');
+  assert.equal(result.hours, 8);
+});
+
+// --- toPositiveFiniteNumber ---------------------------------------------------
+// The shared coercion behind resolveDailyMinimum (and progress.js's
+// targetUtilization read). Tested directly so its contract is pinned
+// independent of either call site.
+
+test('toPositiveFiniteNumber accepts a number or a numeric string', () => {
+  assert.equal(toPositiveFiniteNumber(40), 40);
+  assert.equal(toPositiveFiniteNumber('40'), 40);
+});
+
+test('toPositiveFiniteNumber rejects everything that is not a usable positive number', () => {
+  for (const bad of [null, undefined, '', 'abc', NaN, Infinity, -Infinity, 0, -1, -5]) {
+    assert.equal(toPositiveFiniteNumber(bad), null, `accepted ${JSON.stringify(bad)}`);
   }
 });

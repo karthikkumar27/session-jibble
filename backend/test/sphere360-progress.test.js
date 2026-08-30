@@ -136,6 +136,22 @@ test('falls back to the mapping\'s daily minimum, and says so, when no week has 
   assert.equal(s.targetDays, null);
 });
 
+// Sphere360 serialises targetUtilization as a STRING on the live API ("73",
+// typeof string) — verified against the live endpoint. The old guard
+// (`typeof rawTarget === 'number'`) rejected that real value outright, which
+// is why GET /api/sphere360/cycle came back with targetPercent/targetDays/
+// targetHours all null even though the resource carried a real target.
+test('targetPercent, targetDays and targetHours are still computed when targetUtilization arrives as a numeric string', () => {
+  const s = summary({
+    weeks: LIVE_WEEKS.map((w, i) =>
+      i === 0 ? { ...w, week: { ...w.week, resource: { weeklyCapacityHours: '40', targetUtilization: '73' } } } : w
+    ),
+  });
+  assert.equal(s.targetPercent, 73);
+  assert.equal(s.targetDays, 16.8);
+  assert.equal(s.targetHours, 134.4);
+});
+
 test('takes the resource from whichever week actually has one', () => {
   // The first week of a cycle often has no timesheet yet. Reading weeks[0]
   // blindly would report the configured fallback while a later week states

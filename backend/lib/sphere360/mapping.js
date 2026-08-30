@@ -231,6 +231,21 @@ function isHoliday(date, mapping) {
   return Array.isArray(mapping?.holidays) && mapping.holidays.includes(date);
 }
 
+// Sphere360's own resource fields (weeklyCapacityHours, targetUtilization)
+// were observed live serialised as STRINGS — "40" and "73", typeof "string",
+// not numbers — even though they are numeric quantities. A bare
+// `typeof x === 'number'` guard silently rejects those real values and falls
+// through to whatever fallback exists, which only looks right when the
+// fallback happens to match. This coerces a value that arrives as either a
+// number or a numeric string into a positive finite number, or returns null
+// so the existing fallback paths still fire. Do NOT "tidy" this back into a
+// plain `typeof === 'number'` check — that is the exact bug this fixes.
+function toPositiveFiniteNumber(value) {
+  if (typeof value !== 'number' && typeof value !== 'string') return null;
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
 // Sphere360 declares the operator's own weekly capacity on the week response
 // (observed weeklyCapacityHours: 40) — the daily floor should come from that,
 // not a hardcoded 8. A week with no timesheet yet (client.js returns
@@ -240,8 +255,8 @@ function isHoliday(date, mapping) {
 // Returns { hours, source } rather than just a number so the GET route can be
 // honest with the UI about which one produced the figure on screen.
 function resolveDailyMinimum(mapping, week) {
-  const capacity = week?.resource?.weeklyCapacityHours;
-  if (typeof capacity === 'number' && Number.isFinite(capacity) && capacity > 0) {
+  const capacity = toPositiveFiniteNumber(week?.resource?.weeklyCapacityHours);
+  if (capacity !== null) {
     return { hours: capacity / 5, source: 'sphere360' };
   }
   return { hours: mapping.dailyMinimumHours, source: 'config' };
@@ -250,5 +265,5 @@ function resolveDailyMinimum(mapping, week) {
 module.exports = {
   MAPPING_FILE, MAPPING_VERSION, DEFAULT_MAPPING,
   validateMapping, loadMapping, saveMapping, resolveProject,
-  isHoliday, resolveDailyMinimum,
+  isHoliday, resolveDailyMinimum, toPositiveFiniteNumber,
 };
