@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { AlertCircle, Check, ChevronLeft, ChevronRight, Loader2, Lock } from 'lucide-react';
 import { Sheet, SheetContent, SheetTitle, SheetDescription } from '@/components/ui/sheet';
 import { Button } from '@/components/ui/button';
-import type { ProjectOption, TimesheetEntry, WeekResponse } from '@/lib/types';
+import type { CycleResponse, ProjectOption, TimesheetEntry, WeekResponse } from '@/lib/types';
 import { localDateStr } from '@/lib/utils';
 
 interface Props {
@@ -38,6 +38,25 @@ const dayLabel = (date: string) => {
   });
 };
 
+// Sphere360 renders hours as "13h" and "134h 24m" — the minutes are dropped
+// when they are zero, never shown as "13h 0m". Minutes are rounded rather than
+// truncated so 7.999h reads 8h and not "7h 59m".
+const formatHours = (hours: number) => {
+  const totalMinutes = Math.round(hours * 60);
+  const h = Math.floor(totalMinutes / 60);
+  const m = totalMinutes % 60;
+  return m === 0 ? `${h}h` : `${h}h ${m}m`;
+};
+
+// Sphere360's "days" unit: hours over one day's capacity, always 2 decimals
+// (its own card writes 1.63 and 16.80, not 1.6 and 16.8).
+const formatDays = (days: number) => days.toFixed(2);
+
+// 73 renders "73%", 7.065 renders "7.1%" — matching the card, which shows a
+// whole number where it has one rather than a hollow "73.0%".
+const formatPercent = (percent: number) =>
+  `${Number.isInteger(percent) ? percent : percent.toFixed(1)}%`;
+
 export function TimesheetWeek({ open, onOpenChange }: Props) {
   const [anchor, setAnchor] = useState<string>(() => localDateStr(new Date()));
   const [data, setData] = useState<WeekResponse | null>(null);
@@ -53,11 +72,20 @@ export function TimesheetWeek({ open, onOpenChange }: Props) {
   const [edits, setEdits] = useState<Record<string, TimesheetEntry>>({});
   const [submit, setSubmit] = useState<SubmitState>('idle');
   const [submitError, setSubmitError] = useState<string | null>(null);
+  // The billing cycle the viewed week falls in. Loaded separately from the
+  // week: it spans five weeks of Sphere360 data, and the sheet must render
+  // with or without it.
+  const [progress, setProgress] = useState<CycleResponse | null>(null);
+  const [progressError, setProgressError] = useState<string | null>(null);
 
   // Monotonic request id. A response is applied only if it belongs to the most
   // recent request: a late reply for an older week must never overwrite a newer
   // one, because the header would silently flip back while Confirm stayed live.
   const latestRequest = useRef(0);
+  // The cycle loader's own guard. Deliberately a second ref rather than a
+  // shared one: the two requests complete independently, and one counter would
+  // let a returning week response cancel a newer cycle response.
+  const latestCycleRequest = useRef(0);
 
   // Promise-chained rather than async/await + try/catch: a JS `catch` clause
   // inside an async function is reachable synchronously (before the effect's
@@ -104,13 +132,45 @@ export function TimesheetWeek({ open, onOpenChange }: Props) {
       });
   }, []);
 
+  // A SEPARATE loader, deliberately not folded into load(). That function's
+  // .then/.catch/.finally shape and staleness guard are load-bearing — its own
+  // comment explains why an async/await rewrite reintroduces the
+  // react-hooks/set-state-in-effect error this file must not carry — so this
+  // mirrors the shape rather than restructuring it. Same promise-chain form,
+  // same staleness rule, its own sequence counter.
+  const loadCycle = useCallback((date: string) => {
+    const seq = ++latestCycleRequest.current;
+    return fetch(`/api/sphere360/cycle?date=${date}`)
+      .then(res => {
+        if (seq !== latestCycleRequest.current) return;
+        if (!res.ok) {
+          setProgressError(`Could not load the billing cycle (HTTP ${res.status})`);
+          setProgress(null);
+          return;
+        }
+        return res.json().then((body: CycleResponse) => {
+          if (seq !== latestCycleRequest.current) return;
+          setProgressError(null);
+          setProgress(body);
+        });
+      })
+      .catch((err: unknown) => {
+        if (seq !== latestCycleRequest.current) return;
+        setProgressError(err instanceof Error ? err.message : 'Could not load the billing cycle');
+        setProgress(null);
+      });
+  }, []);
+
   useEffect(() => {
     if (!open) return;
     // Async loader: every setState lands after an await, which keeps this clear
     // of react-hooks/set-state-in-effect. Do not hoist the call out of the effect,
     // and do not add a synchronous setState (e.g. a `loading` flag) ahead of it.
     void load(anchor);
-  }, [open, anchor, load]);
+    // Alongside the week, not after it: the two are independent requests and
+    // the card must not wait on the sheet's own load.
+    void loadCycle(anchor);
+  }, [open, anchor, load, loadCycle]);
 
   const loading = open && loadedAnchor !== anchor;
   const drafted = Object.values(edits);
@@ -163,6 +223,9 @@ export function TimesheetWeek({ open, onOpenChange }: Props) {
       }
       setSubmit('done');
       await load(anchor);
+      // Filing changes BILLED, so the cycle card is stale the moment the POST
+      // succeeds.
+      void loadCycle(anchor);
     } catch (err) {
       setSubmitError(err instanceof Error ? err.message : 'Request failed');
       setSubmit('error');
@@ -194,6 +257,148 @@ export function TimesheetWeek({ open, onOpenChange }: Props) {
         <SheetDescription>
           Drafts this week's coding rows. Meetings and other work stay yours to add.
         </SheetDescription>
+
+        {/* Sphere360's own "MY BILLABLE PROGRESS" card for the 26th-to-25th
+            billing cycle this week falls in, recomputed from the same weeks it
+            reads. Rendered above the week navigation because it is the frame
+            the week sits inside: whether a given week matters is a question
+            about the cycle, not about the week. */}
+        {progress && (
+          <div className="rounded-lg border p-3">
+            <div className="flex items-baseline justify-between">
+              <span className="text-xs font-medium uppercase text-muted-foreground">
+                My billable progress
+              </span>
+              <span className="text-xs text-muted-foreground">{progress.cycle.label}</span>
+            </div>
+
+            <div className="mt-2 grid grid-cols-1 gap-x-6 gap-y-1 sm:grid-cols-2">
+              <div className="flex items-baseline justify-between gap-2">
+                <span className="text-xs uppercase text-muted-foreground">Billed</span>
+                <span className="tabular-nums">
+                  <span className="font-medium">{formatHours(progress.billedHours)}</span>{' '}
+                  <span className="text-xs text-muted-foreground">
+                    ({formatDays(progress.billableDays)} days)
+                  </span>
+                </span>
+              </div>
+              <div className="flex items-baseline justify-between gap-2">
+                <span className="text-xs uppercase text-muted-foreground">Actual</span>
+                <span className="tabular-nums font-medium">{formatPercent(progress.actualPercent)}</span>
+              </div>
+
+              <div className="flex items-baseline justify-between gap-2">
+                <span className="text-xs uppercase text-muted-foreground">Target</span>
+                <span className="tabular-nums">
+                  {/* An em dash, never an invented number: no week in this
+                      cycle stated a utilisation target, and a made-up one is a
+                      figure the operator could be judged against. */}
+                  {progress.targetHours === null ? (
+                    <span className="text-muted-foreground">—</span>
+                  ) : (
+                    <>
+                      <span className="font-medium">{formatHours(progress.targetHours)}</span>{' '}
+                      <span className="text-xs text-muted-foreground">
+                        ({formatDays(progress.targetHours / progress.dailyHours)} days)
+                      </span>
+                    </>
+                  )}
+                </span>
+              </div>
+              <div className="flex items-baseline justify-between gap-2">
+                <span className="text-xs uppercase text-muted-foreground">Target</span>
+                <span className="tabular-nums font-medium">
+                  {progress.targetPercent === null
+                    ? <span className="text-muted-foreground">—</span>
+                    : formatPercent(progress.targetPercent)}
+                </span>
+              </div>
+            </div>
+
+            {progress.targetHours !== null && progress.targetHours > 0 && (
+              <div
+                className="mt-2 h-1.5 overflow-hidden rounded bg-muted"
+                role="progressbar"
+                aria-label="Billed hours against this cycle's target"
+                aria-valuemin={0}
+                aria-valuemax={progress.targetHours}
+                aria-valuenow={progress.billedHours}
+                aria-valuetext={`${formatHours(progress.billedHours)} of ${formatHours(progress.targetHours)}`}
+              >
+                {/* Width only — the figures above carry the same information in
+                    text, so nothing here is conveyed by colour alone. */}
+                <div
+                  className="h-full bg-primary"
+                  style={{ width: `${Math.min(100, (progress.billedHours / progress.targetHours) * 100)}%` }}
+                />
+              </div>
+            )}
+
+            <div className="mt-2 text-xs text-muted-foreground">
+              Day {progress.elapsedWorkingDays} of {progress.workingDays} working days
+              {' · '}{progress.remainingWorkingDays} remaining
+              {progress.dailyHoursSource === 'config' &&
+                ` · ${progress.dailyHours}h/day from your local config, not Sphere360`}
+            </div>
+
+            {/* The row Sphere360 cannot show. It must never read as work still
+                owed: most of it is the SAME work already counted in Billed
+                above, so the two are not additive and the note says so on the
+                same line it appears. */}
+            <div className="mt-2 border-t pt-2 text-xs text-muted-foreground">
+              <span>
+                measured by session-jibble:{' '}
+                <span className="tabular-nums font-medium text-foreground">
+                  {progress.measuredHours.toFixed(2)} h
+                </span>
+              </span>
+              <div>
+                What this app measured over the cycle — it overlaps the hours already filed above,
+                so do not add the two.
+              </div>
+            </div>
+
+            {progress.allocations.length > 0 && (
+              <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground">
+                {progress.allocations.map(a => (
+                  <span key={`${a.projectId}-${a.projectCode}`}>
+                    <span className="font-medium text-foreground">{a.projectCode}</span>
+                    {' · '}{a.plannedMandays} mandays planned
+                  </span>
+                ))}
+              </div>
+            )}
+
+            {/* Partial, not wrong. Naming the count matters: the operator can
+                only judge how much of the cycle is missing if they know how
+                many weeks failed. */}
+            {progress.weekErrors.length > 0 && (
+              <div className="mt-2 flex gap-2 rounded-md border border-amber-300 bg-amber-50 p-2 text-xs">
+                <AlertCircle className="h-4 w-4 shrink-0 text-amber-600" />
+                <span>
+                  {progress.weekErrors.length} week
+                  {progress.weekErrors.length === 1 ? '' : 's'} of this cycle could not be read
+                  ({progress.weekErrors[0].message}), so Billed and Actual are partial — the real
+                  figures can only be higher.
+                </span>
+              </div>
+            )}
+
+            {progress.allocationsError && (
+              <div className="mt-2 text-xs text-muted-foreground">
+                Planned allocations unavailable ({progress.allocationsError.message}) — this is not
+                the same as having none planned.
+              </div>
+            )}
+          </div>
+        )}
+
+        {progressError && (
+          <div className="flex gap-2 rounded-md border border-amber-300 bg-amber-50 p-3 text-sm">
+            <AlertCircle className="h-4 w-4 shrink-0 text-amber-600" />
+            <span>{progressError}</span>
+          </div>
+        )}
 
         <div className="flex items-center gap-2">
           <Button variant="outline" size="sm" onClick={() => setAnchor(shiftWeek(data?.monday ?? anchor, -1))}>

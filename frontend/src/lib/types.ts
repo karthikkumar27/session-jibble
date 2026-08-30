@@ -141,3 +141,44 @@ export interface WeekResponse {
   mappingError: string | null;
   fetchError: { code: string; message: string } | null;
 }
+
+// Sphere360's own "MY BILLABLE PROGRESS" card, for the 26th-to-25th billing
+// cycle the viewed week falls in. Shape returned by GET /api/sphere360/cycle.
+export interface CycleAllocation {
+  projectId: string;
+  projectCode: string;
+  project: string;
+  projectStatus: string;
+  plannedMandays: number;   // this cycle's plan, NOT the project's whole-life total
+}
+
+export interface WeekFetchError {
+  weekStart: string;
+  code: string | null;
+  message: string;
+}
+
+export interface CycleResponse {
+  cycle: { start: string; end: string; monthKey: string; label: string };
+  workingDays: number;          // plain Mon-Fri; holidays are NOT deducted
+  elapsedWorkingDays: number;
+  remainingWorkingDays: number;
+  dailyHours: number;           // also Sphere360's "days" unit — see dailyHoursSource
+  dailyHoursSource: 'sphere360' | 'config';
+  capacityHours: number;
+  // null when no week in the cycle carried a resource: there is no sensible
+  // default for a utilisation target, and inventing one would show the operator
+  // a figure Sphere360 never stated.
+  targetPercent: number | null;
+  targetHours: number | null;
+  billedHours: number;          // filed AND billable only
+  billableDays: number;
+  actualPercent: number;
+  // What session-jibble measured over the cycle. OVERLAPS billedHours — most of
+  // it is the same work, already filed. Never add the two.
+  measuredHours: number;
+  allocations: CycleAllocation[];
+  allocationsError: { code: string | null; message: string } | null;
+  // Per-week failures. Non-empty means the totals above are partial, not wrong.
+  weekErrors: WeekFetchError[];
+}
