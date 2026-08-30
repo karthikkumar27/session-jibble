@@ -38,6 +38,17 @@ const dayLabel = (date: string) => {
   });
 };
 
+// The cutover date, stated once in the header. Split by hand and built LOCAL
+// for the same reason dayLabel is: new Date('2026-08-27') parses as UTC
+// midnight and renders as the previous day east of UTC — which would print a
+// boundary one day off the one actually enforced.
+const cutoverLabel = (date: string) => {
+  const [y, m, d] = date.split('-').map(Number);
+  return new Date(y, m - 1, d).toLocaleDateString(undefined, {
+    day: 'numeric', month: 'short', year: 'numeric',
+  });
+};
+
 // Sphere360 renders hours as "13h" and "134h 24m" — the minutes are dropped
 // when they are zero, never shown as "13h 0m". Minutes are rounded rather than
 // truncated so 7.999h reads 8h and not "7h 59m".
@@ -258,6 +269,17 @@ export function TimesheetWeek({ open, onOpenChange }: Props) {
           Drafts this week's coding rows. Meetings and other work stay yours to add.
         </SheetDescription>
 
+        {/* Stated once, above everything. Without it a day that draws no
+            drafted row looks like a measurement that failed rather than a
+            boundary deliberately held: the operator's timesheet of record was
+            Jibble up to the day before this date, and that period is closed. */}
+        {data?.syncFrom && (
+          <div className="text-xs text-muted-foreground">
+            Syncing from <strong>{cutoverLabel(data.syncFrom)}</strong> — earlier days were kept in
+            Jibble and are never drafted or filed from here.
+          </div>
+        )}
+
         {/* Sphere360's own "MY BILLABLE PROGRESS" card for the 26th-to-25th
             billing cycle this week falls in, recomputed from the same weeks it
             reads. Rendered above the week navigation because it is the frame
@@ -462,7 +484,14 @@ export function TimesheetWeek({ open, onOpenChange }: Props) {
           const dayInfo = data.byDay.find(d => d.date === date);
           const isWorkday = dayInfo?.isWorkday ?? true;
           const isHoliday = dayInfo?.isHoliday ?? false;
-          const short = isWorkday
+          // Before the sync's start date this day belongs to Jibble, not to
+          // Sphere360. The server drafts nothing for it; the shortfall is
+          // suppressed here too, because a shortfall is measured against a
+          // floor this system never owed for that day. Same string compare the
+          // server uses — YYYY-MM-DD sorts in calendar order.
+          const preCutover = !!data.syncFrom && date < data.syncFrom;
+          const measured = data.beforeCutover.find(d => d.date === date)?.hours ?? 0;
+          const short = isWorkday && !preCutover
             ? parseFloat(Math.max(0, data.dailyMinimumHours - total).toFixed(2))
             : 0;
 
@@ -478,14 +507,32 @@ export function TimesheetWeek({ open, onOpenChange }: Props) {
                     its shortfall below. The chip explains why the day looks
                     unusual; it does not claim the day is off the hook. */}
                 <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                  {isWorkday && `minimum ${data.dailyMinimumHours}h`}
-                  {isHoliday && (
-                    <span className="rounded bg-blue-100 px-1 text-blue-800 normal-case">
-                      holiday
+                  {preCutover ? (
+                    <span className="rounded bg-slate-100 px-1 text-slate-700 normal-case">
+                      before sync start (Jibble)
                     </span>
+                  ) : (
+                    <>
+                      {isWorkday && `minimum ${data.dailyMinimumHours}h`}
+                      {isHoliday && (
+                        <span className="rounded bg-blue-100 px-1 text-blue-800 normal-case">
+                          holiday
+                        </span>
+                      )}
+                    </>
                   )}
                 </span>
               </div>
+
+              {/* The measured hours still get shown — they are real work, and
+                  hiding them would look like the day was never worked. What
+                  they do NOT get is a drafted row: this day is already
+                  reconciled in the timesheet that owned it. */}
+              {preCutover && (
+                <div className="mt-2 text-sm text-muted-foreground tabular-nums">
+                  {measured.toFixed(2)} h measured — filed in Jibble, not drafted here.
+                </div>
+              )}
 
               {filedRows.length > 0 && (
                 <div className="mt-2 space-y-1">
@@ -565,9 +612,14 @@ export function TimesheetWeek({ open, onOpenChange }: Props) {
                 <span>day total</span>
                 <span className="tabular-nums">
                   {total.toFixed(2)} h{' '}
-                  {short > 0
-                    ? <span className="text-amber-700">⚠ {short.toFixed(2)} h below minimum</span>
-                    : <span className="text-emerald-700">✓</span>}
+                  {/* Neither a warning nor a tick before the cutover: both are
+                      verdicts against a daily floor this system never owed for
+                      that day, and a green tick would claim it was met. */}
+                  {preCutover
+                    ? null
+                    : short > 0
+                      ? <span className="text-amber-700">⚠ {short.toFixed(2)} h below minimum</span>
+                      : <span className="text-emerald-700">✓</span>}
                 </span>
               </div>
             </div>

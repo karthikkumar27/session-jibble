@@ -103,6 +103,14 @@ export interface UnmappedFolder {
   hours: number;
 }
 
+// A day the sync's cutover kept out of the draft, with what this app measured
+// on it. Reported rather than dropped: a day that shows no drafted row and no
+// explanation reads as a broken measurement, not as a deliberate boundary.
+export interface BeforeCutoverDay {
+  date: string;
+  hours: number;   // measured here, filed nowhere by this app
+}
+
 // Shape returned by GET /api/sphere360/week
 export interface ProjectOption {
   label: string;
@@ -133,6 +141,11 @@ export interface WeekResponse {
   drafted: TimesheetEntry[];
   replacedKeys: string[];
   unmapped: UnmappedFolder[];
+  // The date this sync starts from — everything earlier belongs to the
+  // operator's previous timesheet (Jibble) and is never drafted or written.
+  // null means no cutover is configured, so every date is eligible.
+  syncFrom: string | null;
+  beforeCutover: BeforeCutoverDay[];
   byDay: DayTotals[];
   dailyMinimumHours: number;   // the effective value in use — see dailyMinimumSource
   dailyMinimumSource: 'sphere360' | 'config';
