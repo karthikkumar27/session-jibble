@@ -68,6 +68,36 @@ const formatDays = (days: number) => days.toFixed(2);
 const formatPercent = (percent: number) =>
   `${Number.isInteger(percent) ? percent : percent.toFixed(1)}%`;
 
+// The backend and this component ship together but do not RESTART together: a
+// dev server that is a commit behind returns a response missing whatever field
+// the newest commit added, and an unguarded `data.beforeCutover.find(...)`
+// white-screens the whole dashboard. Normalising once, here, is what stops a
+// version skew from becoming a crash — guarding each read site individually is
+// the same fix applied N times and forgotten on the N+1th field.
+function normalizeWeek(body: Partial<WeekResponse> | null): WeekResponse | null {
+  if (!body || typeof body !== 'object') return null;
+  return {
+    monday: body.monday ?? '',
+    weekStart: body.weekStart ?? '',
+    dates: body.dates ?? [],
+    projects: body.projects ?? [],
+    filed: body.filed ?? [],
+    drafted: body.drafted ?? [],
+    replacedKeys: body.replacedKeys ?? [],
+    unmapped: body.unmapped ?? [],
+    beforeCutover: body.beforeCutover ?? [],
+    byDay: body.byDay ?? [],
+    syncFrom: body.syncFrom ?? null,
+    dailyMinimumHours: body.dailyMinimumHours ?? 8,
+    dailyMinimumSource: body.dailyMinimumSource ?? 'config',
+    resourceId: body.resourceId ?? '',
+    mappingConfigured: body.mappingConfigured ?? false,
+    mappingError: body.mappingError ?? null,
+    fetchError: body.fetchError ?? null,
+    week: body.week ?? null,
+  };
+}
+
 export function TimesheetWeek({ open, onOpenChange }: Props) {
   const [anchor, setAnchor] = useState<string>(() => localDateStr(new Date()));
   const [data, setData] = useState<WeekResponse | null>(null);
@@ -120,8 +150,14 @@ export function TimesheetWeek({ open, onOpenChange }: Props) {
           setData(null);
           return;
         }
-        return res.json().then((body: WeekResponse) => {
+        return res.json().then((raw: Partial<WeekResponse>) => {
           if (seq !== latestRequest.current) return;
+          const body = normalizeWeek(raw);
+          if (!body) {
+            setLoadError('The week response could not be read');
+            setData(null);
+            return;
+          }
           setLoadError(null);
           setData(body);
           // Seed the editable copy from the server's draft on every load, so
