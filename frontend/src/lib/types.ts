@@ -75,3 +75,69 @@ export interface SessionDay {
   hours: number;
   session: Session;
 }
+
+// Sphere360 timesheet sync. `projectId` is optional because non-project rows
+// (leave, social) exist in the timesheet — this app never authors them, but it
+// must round-trip them untouched.
+export interface TimesheetEntry {
+  projectId?: string;
+  activityId: string;
+  workDate: string;
+  hours: number;
+  comments: string;
+}
+
+export interface DayTotals {
+  date: string;
+  isWorkday: boolean;   // false for Sat/Sun ONLY — a holiday does not clear it,
+                         // matching Sphere360's own working-day count
+  isHoliday: boolean;   // a LABEL, not an exemption — see shortBy
+  filedHours: number;
+  draftedHours: number;
+  totalHours: number;
+  shortBy: number;     // positive = below the floor; always 0 when !isWorkday
+}
+
+export interface UnmappedFolder {
+  projectPath: string;
+  hours: number;
+}
+
+// Shape returned by GET /api/sphere360/week
+export interface ProjectOption {
+  label: string;
+  projectId: string;
+  activityId: string;
+}
+
+// Sphere360's own state for the week. The server sends `writable` already
+// decided rather than the raw fields alone: the rule that governs the write
+// lives on the server, and a second copy of it here is a second copy to drift.
+export interface WeekState {
+  status: string | null;
+  isUnlocked: boolean | null;
+  submittedAt: string | null;
+  approvedAt: string | null;
+  writable: boolean;
+}
+
+export interface WeekResponse {
+  monday: string;
+  weekStart: string;
+  dates: string[];
+  // null when no timesheet exists for the week yet — the freest state, not the
+  // most restricted, so it must not be conflated with a locked one.
+  week: WeekState | null;
+  projects: ProjectOption[];
+  filed: TimesheetEntry[];
+  drafted: TimesheetEntry[];
+  replacedKeys: string[];
+  unmapped: UnmappedFolder[];
+  byDay: DayTotals[];
+  dailyMinimumHours: number;   // the effective value in use — see dailyMinimumSource
+  dailyMinimumSource: 'sphere360' | 'config';
+  resourceId: string;
+  mappingConfigured: boolean;
+  mappingError: string | null;
+  fetchError: { code: string; message: string } | null;
+}

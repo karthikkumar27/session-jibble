@@ -76,6 +76,7 @@ Vite proxies `/api/*` → `http://localhost:8089` so the frontend always calls `
 | `session-jibble/events.jsonl` | Our durable copy of interactive transcript events (not a Claude file) |
 | `session-jibble/ingest-state.json` | Per-transcript byte offsets so ingest reads only new data |
 | `session-jibble/ingest.lock` | Exclusive lock so two ingest runs cannot both append |
+| `session-jibble.timesheet.json` | Folder→Sphere360 project/activity prefills (not a Claude file) |
 
 ## Key design decisions
 
@@ -157,6 +158,30 @@ not project — the work being captured spans every repo, not just this one). It
 **Never truncate or delete `events.jsonl`** — it is the durable copy that outlives
 the transcripts, and nothing can rebuild it once they expire. To force a full
 re-read, delete `ingest-state.json` only; uuid dedupe makes that purely additive.
+
+### Sphere360 timesheet sync
+`TimesheetWeek` drafts the week's coding rows into Sphere360's week-scoped
+`/api/timesheets/upsert`, and never writes without an operator confirming.
+
+The endpoint replaces the whole week, so `lib/sphere360/merge.js` unions drafted
+rows onto everything already filed and refuses to post a union that lost a row.
+Meetings, scrums and leave are invisible to this app and must survive every write —
+that is what `sphere360-merge.test.js` exists to protect.
+
+Drafted hours are **uncorrected**: `docs/billing-accuracy-plan.md` measures the
+current engine ~25% high, and those corrections have not landed. `draft.js` takes
+hours through an injected `hoursFor()`, so the corrected engine drops in without
+touching the sync. The UI labels every drafted row until then.
+
+`SPHERE360_TOKEN` lives in `backend/.env` (gitignored). `lib/sphere360/token.js`
+re-reads that file from disk on every call — cached on its mtime/size, so an
+unchanged file is cheap but any edit is picked up on the very next call — so a
+re-pasted token needs no restart. Reading `process.env.SPHERE360_TOKEN` at call
+time would NOT achieve this: `process.loadEnvFile()` never overwrites an
+already-set key, so a long-running server would keep serving whatever token it
+loaded at boot forever regardless of when `process.env` was consulted. 8h is a
+**floor**, not a target — only a short day is flagged, and it never blocks
+confirm.
 
 ## Frontend component details
 

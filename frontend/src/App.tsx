@@ -6,6 +6,7 @@ import { HoursChart } from '@/components/HoursChart';
 import { SessionsTable } from '@/components/SessionsTable';
 import { CategoryFilter } from '@/components/CategoryFilter';
 import { SettingsPanel } from '@/components/SettingsPanel';
+import { TimesheetWeek } from '@/components/TimesheetWeek';
 import { Button } from '@/components/ui/button';
 import type {
   Session, DayStats, CategoryFilterValue, CategoryConfig, ConfigResponse, ProjectRow,
@@ -33,6 +34,7 @@ export default function App() {
   // Days selected in HoursChart — one from a click, several from a drag.
   // Empty = no filter, show all sessions.
   const [selectedDates, setSelectedDates] = useState<string[]>([]);
+  const [timesheetOpen, setTimesheetOpen] = useState(false);
   const [category, setCategory] = useState<CategoryFilterValue>(categoryFromUrl);
   const [config, setConfig] = useState<CategoryConfig | null>(null);
   const [unconfigured, setUnconfigured] = useState(false);
@@ -136,6 +138,9 @@ export default function App() {
               <Settings className="h-4 w-4 mr-1" />
               Settings
             </Button>
+            <Button variant="outline" size="sm" onClick={() => setTimesheetOpen(true)}>
+              Timesheet
+            </Button>
             <Button variant="outline" size="sm" onClick={fetchData} disabled={refreshing}>
               <RefreshCw className={`h-4 w-4 mr-1 ${refreshing ? 'animate-spin' : ''}`} />
               Refresh
@@ -209,6 +214,8 @@ export default function App() {
           onSaved={handleConfigSaved}
         />
       )}
+
+      <TimesheetWeek open={timesheetOpen} onOpenChange={setTimesheetOpen} />
     </div>
   );
 }
