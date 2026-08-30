@@ -176,10 +176,12 @@ export function TimesheetWeek({ open, onOpenChange }: Props) {
   const weekLogged = data
     ? parseFloat(data.dates.reduce((s, d) => s + dayTotal(d), 0).toFixed(2))
     : 0;
-  // Only obligated days carry a floor: a week with one holiday is a 4-day
-  // floor, not the flat 5 the constant used to assume. Counted from byDay's
-  // own isWorkday, which already folds in both weekends and holidays, rather
-  // than re-deriving either rule here.
+  // Counted from byDay's own isWorkday rather than a hand-rolled *5, so this
+  // stays correct if the server's definition of a working day ever changes —
+  // but today isWorkday is plain Mon-Fri and a holiday does NOT reduce it,
+  // matching Sphere360's own "MY BILLABLE PROGRESS" working-day count: a live
+  // cycle containing two public holidays (Merdeka, Malaysia Day) still
+  // counted all 23 Mon-Fri days as working days, not 21.
   const weekFloor = data
     ? parseFloat((data.byDay.filter(d => d.isWorkday).length * data.dailyMinimumHours).toFixed(2))
     : 0;
@@ -258,12 +260,20 @@ export function TimesheetWeek({ open, onOpenChange }: Props) {
             <div key={date} className="rounded-lg border p-3">
               <div className="flex items-baseline justify-between">
                 <span className="font-medium">{dayLabel(date)}</span>
-                {/* Only an obligated day names a minimum. A holiday is labelled
-                    instead — "minimum 8h" on a gazetted day off would be
-                    misleading, not just unmet. A weekend that is not also a
-                    holiday shows neither: it already carries no obligation. */}
-                <span className="text-xs text-muted-foreground">
-                  {isHoliday ? 'holiday' : isWorkday ? `minimum ${data.dailyMinimumHours}h` : null}
+                {/* Only an obligated day (Mon-Fri) names a minimum — a weekend
+                    shows nothing, since it carries none. A holiday chip sits
+                    ALONGSIDE that minimum, not instead of it: Sphere360's own
+                    working-day count does not exempt public holidays either,
+                    so a Mon-Fri holiday still owes the floor and still shows
+                    its shortfall below. The chip explains why the day looks
+                    unusual; it does not claim the day is off the hook. */}
+                <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                  {isWorkday && `minimum ${data.dailyMinimumHours}h`}
+                  {isHoliday && (
+                    <span className="rounded bg-blue-100 px-1 text-blue-800 normal-case">
+                      holiday
+                    </span>
+                  )}
                 </span>
               </div>
 

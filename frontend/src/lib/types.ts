@@ -89,10 +89,9 @@ export interface TimesheetEntry {
 
 export interface DayTotals {
   date: string;
-  // false for Sat/Sun AND for a configured holiday — the floor is an
-  // obligation concept, and neither day carries one, even Mon-Fri.
-  isWorkday: boolean;
-  isHoliday: boolean;  // true only for a date in the mapping's holiday list
+  isWorkday: boolean;   // false for Sat/Sun ONLY — a holiday does not clear it,
+                         // matching Sphere360's own working-day count
+  isHoliday: boolean;   // a LABEL, not an exemption — see shortBy
   filedHours: number;
   draftedHours: number;
   totalHours: number;

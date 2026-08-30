@@ -467,12 +467,19 @@ app.get('/api/sphere360/week', async (req, res) => {
       const on = (list) => list.filter(e => e.workDate === date)
         .reduce((sum, e) => sum + (Number(e.hours) || 0), 0);
       const totalHours = parseFloat(on(preview).toFixed(2));
-      // dates[] is Monday-first, so 5 and 6 are Saturday and Sunday. A holiday
-      // carries no obligation either, even Mon-Fri: an operator in Selangor does
-      // not owe hours on a gazetted day off. Hours logged on either kind of day
-      // still count toward every total above — they just create no shortfall.
+      // dates[] is Monday-first, so 5 and 6 are Saturday and Sunday. isWorkday
+      // is plain Mon-Fri and does NOT exclude a holiday: Sphere360's own "MY
+      // BILLABLE PROGRESS" card counts every Mon-Fri date in a cycle as a
+      // working day regardless of public holidays (verified against a live
+      // cycle spanning two — Merdeka and Malaysia Day — that still counted
+      // all 23), and its 73% target utilisation is exactly the slack that
+      // already absorbs holidays, leave and non-billable time. Excluding a
+      // holiday here too would double-count that allowance and make our
+      // figures disagree with the dashboard that feeds it. isHoliday is
+      // still surfaced so the UI can LABEL the day — it must not be read as
+      // a second isWorkday.
       const holiday = isHoliday(date, mapping);
-      const isWorkday = i < 5 && !holiday;
+      const isWorkday = i < 5;
       return {
         date,
         isWorkday,

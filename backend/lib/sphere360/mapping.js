@@ -12,9 +12,11 @@ const MAX_HOLIDAYS = 100;
 
 // Empty on purpose, exactly as config.js is: seeding one person's projectIds
 // would be wrong for everyone else, and a wrong projectId files real hours
-// against the wrong client. holidays is empty for the same reason a stale
-// list is worse than none — it would silently waive an obligation on a day
-// that turned out to be a normal working day.
+// against the wrong client. holidays is empty for the same reason — a state's
+// gazetted list (or a Federal Territory one that doesn't apply outside KL) is
+// specific to one operator, and a wrong entry mislabels a normal working day
+// as a holiday. It is a LABEL, not an exemption — Sphere360's own working-day
+// count does not deduct public holidays, and neither does this: see isHoliday.
 const DEFAULT_MAPPING = {
   version: MAPPING_VERSION,
   resourceId: '',
@@ -212,12 +214,19 @@ function resolveProject(projectPath, mapping, options) {
   return { label, projectId, activityId };
 }
 
-// A Mon-Fri public holiday is not a working day, but nothing upstream of this
-// knows that on its own — the caller (server.js's byDay) supplies the
-// candidate date, this just answers whether it is one of the configured ones.
-// `date` is expected to already be a validated YYYY-MM-DD local date (every
-// caller in this codebase gets one from week.js's weekDates), so this does a
-// plain membership check rather than re-validating it.
+// Answers only "is this date in the configured list" — nothing here decides
+// what that means for the daily floor. It does NOT mean "not a working day":
+// Sphere360's own "MY BILLABLE PROGRESS" card counts every Mon-Fri date in a
+// cycle as a working day regardless of public holidays (verified against a
+// live cycle containing two — Merdeka and Malaysia Day — that still counted
+// all 23), and its 73% target utilisation is exactly the slack that already
+// absorbs holidays, leave and non-billable time. Treating a holiday as also
+// exempt from the floor here would double that allowance. The caller
+// (server.js's byDay) uses this purely to LABEL the day, not to change
+// isWorkday or shortBy. `date` is expected to already be a validated
+// YYYY-MM-DD local date (every caller in this codebase gets one from
+// week.js's weekDates), so this does a plain membership check rather than
+// re-validating it.
 function isHoliday(date, mapping) {
   return Array.isArray(mapping?.holidays) && mapping.holidays.includes(date);
 }
