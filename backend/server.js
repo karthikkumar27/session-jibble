@@ -13,6 +13,8 @@ const {
 try { process.loadEnvFile(path.join(__dirname, '.env')); } catch { /* no .env yet */ }
 
 const { weekDates, mondayOf, weekStartInstant } = require('./lib/sphere360/week');
+const { cycleFor, weekStartsIn, datesIn, cycleLabel } = require('./lib/sphere360/cycle');
+const { summarizeCycle } = require('./lib/sphere360/progress');
 const {
   loadMapping, saveMapping, validateMapping, resolveDailyMinimum, isHoliday,
 } = require('./lib/sphere360/mapping');
@@ -517,6 +519,87 @@ app.get('/api/sphere360/week', async (req, res) => {
       mappingConfigured: mapping.projects.length > 0 && Boolean(mapping.resourceId),
       mappingError,
       fetchError,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
+// Sphere360's "MY BILLABLE PROGRESS" card for the cycle the given date falls
+// in, recomputed from the weeks that cycle spans.
+//
+// Read-only. Every figure comes from summarizeCycle (lib/sphere360/progress.js)
+// so it is testable against the operator's live card without a network call;
+// this route only fetches, and decides nothing.
+app.get('/api/sphere360/cycle', async (req, res) => {
+  const anchor = req.query.date || toLocalDate(Date.now());
+
+  // `date` is free text from a URL. cycleFor validates through week.js, which
+  // refuses a calendar-invalid date rather than sliding it into another cycle.
+  let cycle;
+  try {
+    cycle = cycleFor(anchor);
+  } catch (err) {
+    return res.status(400).json({ error: err.message });
+  }
+
+  try {
+    const { mapping } = loadMapping();
+    const client = createClient();
+
+    // In parallel, not in sequence: a cycle spans five weeks, and six serial
+    // round trips to a corporate VPN endpoint is the difference between a card
+    // that renders with the sheet and one the operator waits for.
+    //
+    // Each week is caught individually. One expired token or 500 must not blank
+    // a card used to judge whether the operator is behind — the totals come
+    // from the weeks that succeeded, and weekErrors names the rest so the UI
+    // can say the figure is partial.
+    const [weeks, plan] = await Promise.all([
+      Promise.all(weekStartsIn(cycle.start, cycle.end).map(async (weekStart) => {
+        try {
+          const { week, entries } = await client.fetchWeek(weekStartInstant(weekStart));
+          return { weekStart, week, entries };
+        } catch (err) {
+          return { weekStart, error: { code: err.code ?? null, message: err.message } };
+        }
+      })),
+      // Caught the same way and for the same reason. An empty allocations list
+      // means "nothing planned"; a failure must not be rendered as that.
+      client.fetchPlanVsActual(cycle.monthKey).then(
+        ({ allocations }) => ({ allocations, error: null }),
+        (err) => ({ allocations: [], error: { code: err.code ?? null, message: err.message } }),
+      ),
+    ]);
+
+    const summary = summarizeCycle({ cycle, today: toLocalDate(Date.now()), weeks, mapping });
+
+    // What THIS app measured over the cycle's dates. It is not additive with
+    // billedHours — most of it is the same work, already filed — so it is named
+    // and labelled as a measurement, never as an amount outstanding.
+    //
+    // hoursFor already sums across concurrent sessions for a (projectPath,
+    // date) pair, so the pairs are deduped before summing: adding per session
+    // would count two sessions in one repo on one day twice.
+    const { sessions, hoursFor } = weekActivity(datesIn(cycle.start, cycle.end));
+    const datesByProject = new Map();
+    for (const s of sessions) {
+      if (!s.projectPath) continue;
+      if (!datesByProject.has(s.projectPath)) datesByProject.set(s.projectPath, new Set());
+      for (const d of s.dates ?? []) datesByProject.get(s.projectPath).add(d);
+    }
+    let measured = 0;
+    for (const [projectPath, dates] of datesByProject) {
+      for (const date of dates) measured += hoursFor(projectPath, date);
+    }
+
+    res.json({
+      cycle: { ...cycle, label: cycleLabel(cycle.start, cycle.end) },
+      ...summary,
+      measuredHours: parseFloat(measured.toFixed(2)),
+      allocations: plan.allocations,
+      allocationsError: plan.error,
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
