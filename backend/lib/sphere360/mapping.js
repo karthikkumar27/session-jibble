@@ -89,6 +89,27 @@ function validateMapping(raw) {
     }
   }
 
+  // Optional, and deliberately NOT defaulted: absent means "no cutover", every
+  // date eligible. This is the Jibble boundary — the operator's timesheet of
+  // record through 2026-08-25, with 2026-08-26 hand-entered into Sphere360 —
+  // and it is knowledge only this app has. Sphere360 tracks status per WEEK, so
+  // the week of 24 Aug reads DRAFT and writable while three of its days belong
+  // to a closed period in a different system. Nobody but us can refuse those.
+  //
+  // Placed after holidays and before the project loop for the same reason
+  // holidays sits where it does: several existing tests assert errors[0].path
+  // against that order, and a check inserted higher would shift them.
+  if (raw.syncFrom !== undefined) {
+    // isValidLocalDate is week.js's shape-AND-calendar check, reused rather
+    // than re-implemented: '2026-02-30' normalises to Mar 2 under Date.UTC,
+    // which would move the cutover and reopen days of the closed period.
+    if (typeof raw.syncFrom !== 'string' || !isValidLocalDate(raw.syncFrom)) {
+      errors.push({ path: 'syncFrom', message: 'Must be a valid YYYY-MM-DD date' });
+    } else {
+      out.syncFrom = raw.syncFrom;
+    }
+  }
+
   const projects = raw.projects;
   if (!Array.isArray(projects)) {
     errors.push({ path: 'projects', message: '"projects" must be an array' });
@@ -231,6 +252,24 @@ function isHoliday(date, mapping) {
   return Array.isArray(mapping?.holidays) && mapping.holidays.includes(date);
 }
 
+// The one question the Sphere360 API cannot answer for us: does this date
+// belong to a period this app is allowed to touch at all?
+//
+// True only when a cutover is configured AND the date falls before it. No
+// syncFrom means no boundary, so every date is eligible — never a default.
+//
+// A plain string comparison, on purpose. YYYY-MM-DD sorts lexicographically in
+// calendar order, which is what progress.js's cycle range filter and cycle.js's
+// assertRange already rely on throughout this codebase. Do NOT "improve" this
+// into Date parsing: that reintroduces the UTC/local distinction week.js exists
+// to contain, and getting it wrong moves the boundary by a day — into a period
+// already closed in Jibble.
+function beforeCutover(date, mapping) {
+  const cutover = mapping?.syncFrom;
+  if (!cutover) return false;
+  return date < cutover;
+}
+
 // Sphere360's own resource fields (weeklyCapacityHours, targetUtilization)
 // were observed live serialised as STRINGS — "40" and "73", typeof "string",
 // not numbers — even though they are numeric quantities. A bare
@@ -265,5 +304,5 @@ function resolveDailyMinimum(mapping, week) {
 module.exports = {
   MAPPING_FILE, MAPPING_VERSION, DEFAULT_MAPPING,
   validateMapping, loadMapping, saveMapping, resolveProject,
-  isHoliday, resolveDailyMinimum, toPositiveFiniteNumber,
+  isHoliday, beforeCutover, resolveDailyMinimum, toPositiveFiniteNumber,
 };

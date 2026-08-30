@@ -5,7 +5,7 @@ const os = require('os');
 const path = require('path');
 const {
   DEFAULT_MAPPING, validateMapping, loadMapping, saveMapping, resolveProject,
-  isHoliday, resolveDailyMinimum, toPositiveFiniteNumber,
+  isHoliday, resolveDailyMinimum, toPositiveFiniteNumber, beforeCutover,
 } = require('../lib/sphere360/mapping');
 
 const tmpFile = () =>
@@ -203,6 +203,94 @@ test('validates holidays after dailyMinimumHours and before the project loop', (
   assert.equal(errors[0].path, 'dailyMinimumHours');
   assert.equal(errors[1].path, 'holidays[0]');
   assert.equal(errors[2].path, 'projects[0].activityId');
+});
+
+// --- syncFrom / the Jibble cutover -------------------------------------------
+// Jibble was the operator's timesheet of record through 2026-08-25 and
+// Sphere360 from 2026-08-26 — a day they entered by hand — so nothing may be
+// drafted or written before 2026-08-27. Sphere360 itself cannot express this:
+// it tracks status per WEEK, and the week of 24 Aug is DRAFT and writable, so
+// its own guard would happily let 7.42h of an already-reconciled Jibble period
+// be written into it.
+
+test('accepts a well-formed syncFrom', () => {
+  const { mapping, errors } = validateMapping({ ...valid, syncFrom: '2026-08-27' });
+  assert.deepEqual(errors, []);
+  assert.equal(mapping.syncFrom, '2026-08-27');
+});
+
+test('an absent syncFrom is valid and means no cutover at all', () => {
+  // Not defaulted to today, to the epoch, or to anything else: an operator who
+  // has never set a cutover must not silently acquire one they did not ask for.
+  const { mapping, errors } = validateMapping(valid);
+  assert.deepEqual(errors, []);
+  assert.equal(mapping.syncFrom, undefined);
+  assert.equal(beforeCutover('1999-01-01', mapping), false);
+});
+
+test('rejects a calendar-invalid syncFrom with the syncFrom field path', () => {
+  // week.js's own shape-AND-calendar check, reused rather than re-implemented:
+  // 2026-02-30 must be refused, not normalised to Mar 2 — which would move the
+  // cutover two days and reopen part of the closed Jibble period.
+  const { mapping, errors } = validateMapping({ ...valid, syncFrom: '2026-02-30' });
+  assert.equal(mapping, null);
+  assert.equal(errors[0].path, 'syncFrom');
+});
+
+test('rejects a malformed syncFrom with the syncFrom field path', () => {
+  for (const bad of ['08/27/2026', '2026-8-27', '', 27, true, null]) {
+    const { mapping, errors } = validateMapping({ ...valid, syncFrom: bad });
+    assert.equal(mapping, null, `accepted ${JSON.stringify(bad)}`);
+    assert.equal(errors[0].path, 'syncFrom', `wrong path for ${JSON.stringify(bad)}`);
+  }
+});
+
+test('validates syncFrom after holidays and before the project loop', () => {
+  // The order proof, extended. Several existing tests assert errors[0].path,
+  // so a new check inserted in the wrong place silently breaks them; with all
+  // four fields broken at once the positions are pinned here explicitly.
+  const { errors } = validateMapping({
+    ...valid,
+    dailyMinimumHours: -1,
+    holidays: ['not-a-date'],
+    syncFrom: '2026-02-30',
+    projects: [{ ...valid.projects[0], activityId: '' }],
+  });
+  assert.equal(errors[0].path, 'dailyMinimumHours');
+  assert.equal(errors[1].path, 'holidays[0]');
+  assert.equal(errors[2].path, 'syncFrom');
+  assert.equal(errors[3].path, 'projects[0].activityId');
+});
+
+test('saveMapping then loadMapping round-trips a syncFrom', () => {
+  const file = tmpFile();
+  const { mapping } = validateMapping({ ...valid, syncFrom: '2026-08-27' });
+  saveMapping(mapping, file);
+  assert.equal(loadMapping(file).mapping.syncFrom, '2026-08-27');
+});
+
+test('beforeCutover is true before syncFrom and false from the cutover onward', () => {
+  const { mapping } = validateMapping({ ...valid, syncFrom: '2026-08-27' });
+  assert.equal(beforeCutover('2026-08-24', mapping), true);    // Jibble's period
+  assert.equal(beforeCutover('2026-08-25', mapping), true);    // Jibble's last day
+  assert.equal(beforeCutover('2026-08-26', mapping), true);    // hand-entered
+  assert.equal(beforeCutover('2026-08-27', mapping), false);   // the cutover is INCLUDED
+  assert.equal(beforeCutover('2026-08-28', mapping), false);
+});
+
+test('beforeCutover orders across a year boundary', () => {
+  // A plain YYYY-MM-DD string compare IS calendar order. This fails loudly if
+  // anyone rewrites it as a day-of-month or month-of-year comparison.
+  const { mapping } = validateMapping({ ...valid, syncFrom: '2027-01-01' });
+  assert.equal(beforeCutover('2026-12-31', mapping), true);
+  assert.equal(beforeCutover('2027-01-02', mapping), false);
+});
+
+test('beforeCutover is false for every date when no syncFrom is configured', () => {
+  const { mapping } = validateMapping(valid);
+  for (const d of ['1970-01-01', '2026-08-24', '2999-12-31']) {
+    assert.equal(beforeCutover(d, mapping), false, `excluded ${d}`);
+  }
 });
 
 // --- isHoliday ---------------------------------------------------------------
