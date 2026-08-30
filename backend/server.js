@@ -14,7 +14,7 @@ try { process.loadEnvFile(path.join(__dirname, '.env')); } catch { /* no .env ye
 
 const { weekDates, mondayOf, weekStartInstant } = require('./lib/sphere360/week');
 const {
-  loadMapping, saveMapping, validateMapping, resolveDailyMinimum,
+  loadMapping, saveMapping, validateMapping, resolveDailyMinimum, isHoliday,
 } = require('./lib/sphere360/mapping');
 const { buildDraft } = require('./lib/sphere360/draft');
 const { mergeWeek, entryKey, weekWritable, stripClientIdentity, foreignWorkDate } = require('./lib/sphere360/merge');
@@ -467,13 +467,16 @@ app.get('/api/sphere360/week', async (req, res) => {
       const on = (list) => list.filter(e => e.workDate === date)
         .reduce((sum, e) => sum + (Number(e.hours) || 0), 0);
       const totalHours = parseFloat(on(preview).toFixed(2));
-      // dates[] is Monday-first, so 5 and 6 are Saturday and Sunday. The floor is
-      // a working-day expectation: applying it to the weekend would invent a 16h
-      // shortfall every week and train the operator to ignore the warning.
-      const isWorkday = i < 5;
+      // dates[] is Monday-first, so 5 and 6 are Saturday and Sunday. A holiday
+      // carries no obligation either, even Mon-Fri: an operator in Selangor does
+      // not owe hours on a gazetted day off. Hours logged on either kind of day
+      // still count toward every total above — they just create no shortfall.
+      const holiday = isHoliday(date, mapping);
+      const isWorkday = i < 5 && !holiday;
       return {
         date,
         isWorkday,
+        isHoliday: holiday,
         filedHours: parseFloat(on(filed).toFixed(2)),
         draftedHours: parseFloat(on(drafted).toFixed(2)),
         totalHours,
