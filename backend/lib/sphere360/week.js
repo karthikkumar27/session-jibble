@@ -86,4 +86,19 @@ function workDateOf(value) {
   throw new Error(`Unusable workDate ${JSON.stringify(value)}: expected YYYY-MM-DD or a UTC instant`);
 }
 
-module.exports = { mondayOf, weekStartInstant, weekDates, workDateOf };
+// Boolean twin of assertLocalDate, for callers that validate a whole list and
+// need to keep going after a bad entry rather than throw on the first one —
+// mapping.js's holiday list is exactly that caller. Reuses assertLocalDate
+// itself rather than re-deriving the shape/calendar check, so the two can
+// never drift: this module stays the only place that decides what a valid
+// local date is.
+function isValidLocalDate(d) {
+  try {
+    assertLocalDate(d);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+module.exports = { mondayOf, weekStartInstant, weekDates, workDateOf, isValidLocalDate };

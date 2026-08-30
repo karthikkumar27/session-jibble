@@ -1,6 +1,6 @@
 const { test } = require('node:test');
 const assert = require('node:assert');
-const { mondayOf, weekStartInstant, weekDates, workDateOf } = require('../lib/sphere360/week');
+const { mondayOf, weekStartInstant, weekDates, workDateOf, isValidLocalDate } = require('../lib/sphere360/week');
 
 test('mondayOf returns the same Monday for every day of that week', () => {
   for (const d of ['2026-08-24', '2026-08-26', '2026-08-30']) {
@@ -112,4 +112,30 @@ test('workDateOf rejects a calendar-invalid instant instead of sliding it a day'
   assert.throws(() => workDateOf('2026-02-30T00:00:00.000Z'), /Unusable workDate/);
   assert.throws(() => workDateOf('2026-02-30'), /YYYY-MM-DD/);
   assert.equal(workDateOf('2028-02-29T00:00:00.000Z'), '2028-02-29');
+});
+
+// --- isValidLocalDate ----------------------------------------------------------
+// mapping.js's holiday list needs shape-AND-calendar validation identical to
+// assertLocalDate's, without adopting its throw. This is that check as a
+// boolean, so mapping.js can reuse it inside a per-entry validation loop
+// instead of growing a second '2026-02-30' trap of its own.
+
+test('isValidLocalDate accepts a real calendar date', () => {
+  assert.equal(isValidLocalDate('2026-08-26'), true);
+  assert.equal(isValidLocalDate('2028-02-29'), true); // real leap day
+});
+
+test('isValidLocalDate rejects a calendar-invalid date without throwing', () => {
+  // Date.UTC normalises this to Mar 2 instead of failing — exactly the trap
+  // assertLocalDate closes. A boolean helper that let it through would let a
+  // bogus holiday silently apply to the wrong day.
+  assert.equal(isValidLocalDate('2026-02-30'), false);
+  assert.equal(isValidLocalDate('2026-13-01'), false);
+  assert.equal(isValidLocalDate('2025-02-29'), false); // not a leap year
+});
+
+test('isValidLocalDate rejects malformed shapes and non-strings without throwing', () => {
+  for (const bad of ['26-08-2026', '2026/08/26', '2026-8-26', '', null, undefined, 42, {}, []]) {
+    assert.equal(isValidLocalDate(bad), false, `accepted ${JSON.stringify(bad)}`);
+  }
 });
