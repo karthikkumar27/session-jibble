@@ -2,20 +2,25 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { DEFAULT_OPTIONS, normalizePath, matchesRoot } = require('../categorize');
+const { isValidLocalDate } = require('./week');
 
 const MAPPING_FILE = path.join(os.homedir(), '.claude', 'session-jibble.timesheet.json');
 const MAPPING_VERSION = 1;
 const DEFAULT_MINIMUM_HOURS = 8;
 const MAX_PROJECTS = 100;
+const MAX_HOLIDAYS = 100;
 
 // Empty on purpose, exactly as config.js is: seeding one person's projectIds
 // would be wrong for everyone else, and a wrong projectId files real hours
-// against the wrong client.
+// against the wrong client. holidays is empty for the same reason a stale
+// list is worse than none — it would silently waive an obligation on a day
+// that turned out to be a normal working day.
 const DEFAULT_MAPPING = {
   version: MAPPING_VERSION,
   resourceId: '',
   projects: [],
   dailyMinimumHours: DEFAULT_MINIMUM_HOURS,
+  holidays: [],
 };
 
 // Same shape config.js accepts, so a root learned there works here unchanged.
@@ -32,6 +37,7 @@ function validateMapping(raw) {
     resourceId: '',
     projects: [],
     dailyMinimumHours: DEFAULT_MINIMUM_HOURS,
+    holidays: [],
   };
 
   if (typeof raw.resourceId !== 'string' || !raw.resourceId.trim()) {
@@ -46,6 +52,38 @@ function validateMapping(raw) {
       errors.push({ path: 'dailyMinimumHours', message: 'Must be a number between 0 and 24' });
     } else {
       out.dailyMinimumHours = n;
+    }
+  }
+
+  // Optional. Absent or empty means "no holidays configured" — not an error —
+  // because there is no holiday endpoint to seed from (all four probed paths
+  // 404): every entry here is hand-maintained, and most operators will have
+  // none yet. Placed after dailyMinimumHours and before the project loop on
+  // purpose: several existing tests assert errors[0].path against that order,
+  // and this must not shift it.
+  if (raw.holidays !== undefined) {
+    if (!Array.isArray(raw.holidays)) {
+      errors.push({ path: 'holidays', message: '"holidays" must be an array' });
+    } else if (raw.holidays.length > MAX_HOLIDAYS) {
+      errors.push({ path: 'holidays', message: `At most ${MAX_HOLIDAYS} holidays allowed` });
+    } else {
+      // A repeat is noise, not a mistake — unlike a root double-claimed by two
+      // projects, two identical holiday dates don't create any ambiguity to
+      // report. Silently folded to one, consistent with how roots behaves.
+      const seen = new Set();
+      raw.holidays.forEach((h, i) => {
+        const at = `holidays[${i}]`;
+        // isValidLocalDate is week.js's own shape-AND-calendar check, reused
+        // rather than re-implemented: a second '2026-02-30' trap here could
+        // drift from the one week.js already closes.
+        if (typeof h !== 'string' || !isValidLocalDate(h)) {
+          errors.push({ path: at, message: 'Must be a valid YYYY-MM-DD date' });
+          return;
+        }
+        if (seen.has(h)) return;
+        seen.add(h);
+        out.holidays.push(h);
+      });
     }
   }
 
@@ -174,7 +212,18 @@ function resolveProject(projectPath, mapping, options) {
   return { label, projectId, activityId };
 }
 
+// A Mon-Fri public holiday is not a working day, but nothing upstream of this
+// knows that on its own — the caller (server.js's byDay) supplies the
+// candidate date, this just answers whether it is one of the configured ones.
+// `date` is expected to already be a validated YYYY-MM-DD local date (every
+// caller in this codebase gets one from week.js's weekDates), so this does a
+// plain membership check rather than re-validating it.
+function isHoliday(date, mapping) {
+  return Array.isArray(mapping?.holidays) && mapping.holidays.includes(date);
+}
+
 module.exports = {
   MAPPING_FILE, MAPPING_VERSION, DEFAULT_MAPPING,
   validateMapping, loadMapping, saveMapping, resolveProject,
+  isHoliday,
 };
