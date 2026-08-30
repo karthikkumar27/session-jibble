@@ -1,18 +1,31 @@
+const path = require('node:path');
 const { test } = require('node:test');
 const assert = require('node:assert');
 const { createClient } = require('../lib/sphere360/client');
 const { mergeWeek } = require('../lib/sphere360/merge');
+const { useEnvPathForTests } = require('../lib/sphere360/token');
+
+// client.js's readToken() now goes through lib/sphere360/token.js, which reads
+// backend/.env off disk. That file is this developer's real, live Sphere360
+// credential (see sphere360-token.test.js for the module's own file-reading
+// coverage) — these tests must never touch it, so every call here is pointed
+// at a path that provably does not exist, which sends token.js straight to
+// its process.env fallback. That is what makes the token values below
+// ('tok123', 'first', 'second', ...) the ones client.js actually sees.
+const UNREACHABLE_ENV_PATH = path.join(__dirname, '.sphere360-token-test-unreachable.env');
 
 // async + await on purpose: a synchronous try/finally around an async fn restores
 // the environment BEFORE the awaited body runs, so every assertion inside would
 // see the ambient token rather than the one under test.
 const withToken = async (value, fn) => {
   const prev = process.env.SPHERE360_TOKEN;
+  useEnvPathForTests(UNREACHABLE_ENV_PATH);
   if (value === null) delete process.env.SPHERE360_TOKEN;
   else process.env.SPHERE360_TOKEN = value;
   try { return await fn(); } finally {
     if (prev === undefined) delete process.env.SPHERE360_TOKEN;
     else process.env.SPHERE360_TOKEN = prev;
+    useEnvPathForTests();
   }
 };
 

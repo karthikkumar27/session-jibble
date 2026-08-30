@@ -1,11 +1,16 @@
 // The only module in this feature that touches the network.
 //
-// The token is read from the environment at CALL time, never captured at module
-// load. Sphere360 bearers are short-lived, so the operator re-pastes into
-// backend/.env mid-session and the very next request must pick it up without a
-// server restart.
+// The token is read from backend/.env at CALL time, never captured at module
+// load or cached in process.env. Sphere360 bearers are short-lived, so the
+// operator re-pastes into backend/.env mid-session — and process.loadEnvFile()
+// does not overwrite an already-set process.env key, so a process.env-based
+// read would keep serving whatever token the server loaded at boot forever.
+// Delegating to lib/sphere360/token.js, which re-reads the file itself (cached
+// on its mtime/size), is what actually makes the very next request pick up a
+// rotated token without a server restart.
 
 const { workDateOf } = require('./week');
+const { readToken: tokenReader } = require('./token');
 
 const BASE_URL = 'https://sphere360.airasia.com';
 
@@ -21,7 +26,7 @@ function fail(code, message, status) {
 }
 
 function readToken() {
-  const token = (process.env.SPHERE360_TOKEN || '').trim();
+  const token = tokenReader();
   if (!token) {
     throw fail('NO_TOKEN', 'SPHERE360_TOKEN is not set. Add it to backend/.env and retry.');
   }

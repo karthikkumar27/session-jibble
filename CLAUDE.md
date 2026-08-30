@@ -173,9 +173,15 @@ current engine ~25% high, and those corrections have not landed. `draft.js` take
 hours through an injected `hoursFor()`, so the corrected engine drops in without
 touching the sync. The UI labels every drafted row until then.
 
-`SPHERE360_TOKEN` lives in `backend/.env` (gitignored) and is read at call time,
-so a re-pasted token needs no restart. 8h is a **floor**, not a target — only a
-short day is flagged, and it never blocks confirm.
+`SPHERE360_TOKEN` lives in `backend/.env` (gitignored). `lib/sphere360/token.js`
+re-reads that file from disk on every call — cached on its mtime/size, so an
+unchanged file is cheap but any edit is picked up on the very next call — so a
+re-pasted token needs no restart. Reading `process.env.SPHERE360_TOKEN` at call
+time would NOT achieve this: `process.loadEnvFile()` never overwrites an
+already-set key, so a long-running server would keep serving whatever token it
+loaded at boot forever regardless of when `process.env` was consulted. 8h is a
+**floor**, not a target — only a short day is flagged, and it never blocks
+confirm.
 
 ## Frontend component details
 
