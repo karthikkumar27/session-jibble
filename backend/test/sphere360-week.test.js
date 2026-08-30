@@ -1,6 +1,9 @@
 const { test } = require('node:test');
 const assert = require('node:assert');
-const { mondayOf, weekStartInstant, weekDates, workDateOf, isValidLocalDate } = require('../lib/sphere360/week');
+const {
+  mondayOf, weekStartInstant, weekDates, workDateOf, isValidLocalDate,
+  addDays, dayOfWeek, dateParts, fromDateParts,
+} = require('../lib/sphere360/week');
 
 test('mondayOf returns the same Monday for every day of that week', () => {
   for (const d of ['2026-08-24', '2026-08-26', '2026-08-30']) {
@@ -138,4 +141,44 @@ test('isValidLocalDate rejects malformed shapes and non-strings without throwing
   for (const bad of ['26-08-2026', '2026/08/26', '2026-8-26', '', null, undefined, 42, {}, []]) {
     assert.equal(isValidLocalDate(bad), false, `accepted ${JSON.stringify(bad)}`);
   }
+});
+
+// --- calendar helpers the cycle module builds on ---------------------------
+// These exist so cycle.js can do month/day arithmetic without constructing a
+// Date of its own. week.js stays the only module that knows how a local date
+// becomes an instant; everything else asks it.
+
+test('addDays crosses month and year boundaries', () => {
+  assert.equal(addDays('2026-08-31', 1), '2026-09-01');
+  assert.equal(addDays('2026-12-31', 1), '2027-01-01');
+  assert.equal(addDays('2026-01-01', -1), '2025-12-31');
+  assert.equal(addDays('2028-02-28', 1), '2028-02-29');   // real leap day
+});
+
+test('dayOfWeek is the calendar weekday, not a local-clock one', () => {
+  // The bug this guards: reading the weekday off a locally-parsed Date returns
+  // the PREVIOUS day west of UTC and can shift east of it, which would move a
+  // Monday out of the Mon-Fri count and change the cycle's working-day total.
+  const prev = process.env.TZ;
+  for (const tz of ['Asia/Kuala_Lumpur', 'America/New_York', 'UTC']) {
+    process.env.TZ = tz;
+    try {
+      assert.equal(dayOfWeek('2026-08-24'), 1, `Monday in ${tz}`);
+      assert.equal(dayOfWeek('2026-08-29'), 6, `Saturday in ${tz}`);
+      assert.equal(dayOfWeek('2026-08-30'), 0, `Sunday in ${tz}`);
+    } finally {
+      if (prev === undefined) delete process.env.TZ; else process.env.TZ = prev;
+    }
+  }
+});
+
+test('dateParts and fromDateParts round-trip, and refuse an impossible date', () => {
+  assert.deepEqual(dateParts('2026-09-25'), { year: 2026, month: 9, day: 25 });
+  assert.equal(fromDateParts(2026, 9, 25), '2026-09-25');
+  assert.equal(fromDateParts(2026, 1, 5), '2026-01-05');       // zero padding
+  // The same calendar check assertLocalDate applies: a caller that computed a
+  // month of 13 by forgetting to roll the year must be told, not handed a
+  // string that silently becomes the following February.
+  assert.throws(() => fromDateParts(2026, 13, 25), /YYYY-MM-DD/);
+  assert.throws(() => fromDateParts(2026, 2, 30), /YYYY-MM-DD/);
 });

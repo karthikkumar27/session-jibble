@@ -101,4 +101,42 @@ function isValidLocalDate(d) {
   }
 }
 
-module.exports = { mondayOf, weekStartInstant, weekDates, workDateOf, isValidLocalDate };
+// --- calendar arithmetic for callers that must not build a Date -------------
+//
+// cycle.js needs to walk days and read weekdays to count Mon-Fri dates, and to
+// take a date apart to find the 26th-to-25th boundary. All of it lives here so
+// week.js stays the ONE module that knows how a local date maps to an instant:
+// a second implementation elsewhere is a second place for the UTC/local
+// distinction to be got wrong, and getting it wrong moves a Monday out of the
+// working-day count.
+
+function addDays(localDate, n) {
+  return fromParts(toParts(localDate) + n * 86_400_000);
+}
+
+// 0 = Sunday, matching Date#getDay's numbering. Read in UTC off a UTC-built
+// instant, exactly as mondayOf does: a local read returns the previous day
+// west of UTC, which would reclassify a Monday as a Sunday.
+function dayOfWeek(localDate) {
+  return new Date(toParts(localDate)).getUTCDay();
+}
+
+function dateParts(localDate) {
+  assertLocalDate(localDate);
+  const [year, month, day] = localDate.split('-').map(Number);
+  return { year, month, day };
+}
+
+// The inverse. Runs the same assertLocalDate check, so a caller that computed
+// month 13 by forgetting to roll the year is told rather than handed a string
+// that Date.UTC would quietly normalise into the following February.
+function fromDateParts(year, month, day) {
+  const out = `${String(year).padStart(4, '0')}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+  assertLocalDate(out);
+  return out;
+}
+
+module.exports = {
+  mondayOf, weekStartInstant, weekDates, workDateOf, isValidLocalDate,
+  addDays, dayOfWeek, dateParts, fromDateParts,
+};
