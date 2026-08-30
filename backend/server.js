@@ -16,7 +16,7 @@ const { weekDates, mondayOf, weekStartInstant } = require('./lib/sphere360/week'
 const { cycleFor, weekStartsIn, datesIn, cycleLabel } = require('./lib/sphere360/cycle');
 const { summarizeCycle } = require('./lib/sphere360/progress');
 const {
-  loadMapping, saveMapping, validateMapping, resolveDailyMinimum, isHoliday,
+  loadMapping, saveMapping, validateMapping, resolveDailyMinimum, isHoliday, beforeCutover,
 } = require('./lib/sphere360/mapping');
 const { buildDraft } = require('./lib/sphere360/draft');
 const { mergeWeek, entryKey, weekWritable, stripClientIdentity, foreignWorkDate } = require('./lib/sphere360/merge');
@@ -454,7 +454,10 @@ app.get('/api/sphere360/week', async (req, res) => {
     }
 
     const { sessions, hoursFor } = weekActivity(dates);
-    const { entries: drafted, unmapped } =
+    // beforeCutoverDays, not `beforeCutover`: the imported predicate of that
+    // name is what the POST route refuses with, and shadowing it here would
+    // silently disarm the guard if these two routes ever move closer together.
+    const { entries: drafted, unmapped, beforeCutover: beforeCutoverDays } =
       buildDraft({ anyDateInWeek: anchor, sessions, mapping, hoursFor });
 
     const { entries: preview, replaced } = mergeWeek({ filed, drafted });
@@ -512,6 +515,11 @@ app.get('/api/sphere360/week', async (req, res) => {
       drafted,
       replacedKeys,
       unmapped,
+      // The Jibble cutover, and the days it kept out of the draft. Both are
+      // sent so the UI can explain an empty day rather than let it read as a
+      // measurement that failed: null syncFrom means no cutover at all.
+      syncFrom: mapping.syncFrom ?? null,
+      beforeCutover: beforeCutoverDays,
       byDay,
       dailyMinimumHours: minimum,
       dailyMinimumSource,
@@ -649,6 +657,19 @@ app.post('/api/sphere360/week', async (req, res) => {
       if (!dates.has(e.workDate)) {
         return res.status(400).json({ error: `${e.workDate} is outside the posted week` });
       }
+      // The Jibble boundary, enforced before a single network call. draft.js
+      // already keeps these dates out of the draft, but that filter is a
+      // DEFAULT and this is the GUARANTEE: a UI bug, a stale tab or a
+      // hand-rolled request must not be able to reach into a period closed in
+      // another system. 409 rather than 400 because nothing about the request
+      // is malformed — it conflicts with a boundary the request cannot see,
+      // exactly like the NOT_WRITABLE refusal below.
+      if (beforeCutover(e.workDate, mapping)) {
+        return res.status(409).json({
+          code: 'BEFORE_CUTOVER',
+          error: `${e.workDate} is before this sync's start date of ${mapping.syncFrom} — that period was kept in Jibble and is not filed from here.`,
+        });
+      }
       if (!e.activityId) return res.status(400).json({ error: 'Every entry needs an activityId' });
       const h = Number(e.hours);
       if (!Number.isFinite(h) || h <= 0 || h > 24) {
@@ -686,6 +707,20 @@ app.post('/api/sphere360/week', async (req, res) => {
       return res.status(409).json({
         code: 'FOREIGN_DATE',
         error: `Sphere360 returned a row dated ${foreign}, outside the week of ${mondayOf(date)}; the week was not written.`,
+      });
+    }
+
+    // Checked against the UNION for the same reason foreignWorkDate is: it
+    // carries filed rows straight from the API that the request validation
+    // above never saw, and upsert replaces the week wholesale — so a filed row
+    // dated inside the Jibble period would be re-written by this POST even
+    // though this app never drafted it. Refuse the whole write; a week
+    // straddling the cutover is not this system's to replace.
+    const early = union.find(row => beforeCutover(row.workDate, mapping));
+    if (early) {
+      return res.status(409).json({
+        code: 'BEFORE_CUTOVER',
+        error: `The week carries a row dated ${early.workDate}, before this sync's start date of ${mapping.syncFrom}; the week was not written.`,
       });
     }
 
