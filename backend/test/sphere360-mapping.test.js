@@ -5,7 +5,7 @@ const os = require('os');
 const path = require('path');
 const {
   DEFAULT_MAPPING, validateMapping, loadMapping, saveMapping, resolveProject,
-  isHoliday,
+  isHoliday, resolveDailyMinimum,
 } = require('../lib/sphere360/mapping');
 
 const tmpFile = () =>
@@ -220,4 +220,42 @@ test('isHoliday is false for a date not in the holiday list', () => {
 test('isHoliday is false when no holidays are configured', () => {
   const { mapping } = validateMapping(valid);
   assert.equal(isHoliday('2026-08-31', mapping), false);
+});
+
+// --- resolveDailyMinimum ------------------------------------------------------
+// Sphere360's own weeklyCapacityHours (observed 40 -> 8h/day) beats the
+// mapping's configured fallback whenever the week carries a resource; a week
+// with no timesheet yet (client.js returns week: null) carries none.
+
+test('resolveDailyMinimum prefers Sphere360 weeklyCapacityHours over the config value', () => {
+  // dailyMinimumHours is deliberately NOT 8, so a result of 8 can only have
+  // come from 40 / 5, never from silently falling through to config.
+  const { mapping } = validateMapping({ ...valid, dailyMinimumHours: 6 });
+  const week = { resource: { weeklyCapacityHours: 40 } };
+  const result = resolveDailyMinimum(mapping, week);
+  assert.equal(result.hours, 8);
+  assert.equal(result.source, 'sphere360');
+});
+
+test('resolveDailyMinimum falls back to the config value when week is null', () => {
+  const { mapping } = validateMapping({ ...valid, dailyMinimumHours: 7 });
+  const result = resolveDailyMinimum(mapping, null);
+  assert.equal(result.hours, 7);
+  assert.equal(result.source, 'config');
+});
+
+test('resolveDailyMinimum falls back to the config value when the week has no resource', () => {
+  const { mapping } = validateMapping({ ...valid, dailyMinimumHours: 7 });
+  const result = resolveDailyMinimum(mapping, {});
+  assert.equal(result.hours, 7);
+  assert.equal(result.source, 'config');
+});
+
+test('resolveDailyMinimum falls back to the config value when weeklyCapacityHours is not a usable positive number', () => {
+  const { mapping } = validateMapping({ ...valid, dailyMinimumHours: 7 });
+  for (const bad of [0, -5, 'forty', null, undefined, NaN]) {
+    const result = resolveDailyMinimum(mapping, { resource: { weeklyCapacityHours: bad } });
+    assert.equal(result.source, 'config', `accepted ${JSON.stringify(bad)}`);
+    assert.equal(result.hours, 7);
+  }
 });

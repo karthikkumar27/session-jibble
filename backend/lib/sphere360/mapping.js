@@ -222,8 +222,24 @@ function isHoliday(date, mapping) {
   return Array.isArray(mapping?.holidays) && mapping.holidays.includes(date);
 }
 
+// Sphere360 declares the operator's own weekly capacity on the week response
+// (observed weeklyCapacityHours: 40) — the daily floor should come from that,
+// not a hardcoded 8. A week with no timesheet yet (client.js returns
+// week: null for it) carries no resource, so this falls back to the mapping's
+// configured dailyMinimumHours, which itself defaults to 8.
+//
+// Returns { hours, source } rather than just a number so the GET route can be
+// honest with the UI about which one produced the figure on screen.
+function resolveDailyMinimum(mapping, week) {
+  const capacity = week?.resource?.weeklyCapacityHours;
+  if (typeof capacity === 'number' && Number.isFinite(capacity) && capacity > 0) {
+    return { hours: capacity / 5, source: 'sphere360' };
+  }
+  return { hours: mapping.dailyMinimumHours, source: 'config' };
+}
+
 module.exports = {
   MAPPING_FILE, MAPPING_VERSION, DEFAULT_MAPPING,
   validateMapping, loadMapping, saveMapping, resolveProject,
-  isHoliday,
+  isHoliday, resolveDailyMinimum,
 };
