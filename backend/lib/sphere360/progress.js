@@ -83,19 +83,31 @@ function summarizeCycle({ cycle, today, weeks = [], mapping }) {
   const elapsed = elapsedWorkingDays(start, today, end);
   const capacityHours = round2(workingDays * dailyHours);
 
-  // The plain documented product. NOTE: the live card for 26 Aug - 25 Sep 2026
-  // renders TARGET as "134h 24m (16.80 days)" — 134.4h — where this yields
-  // 134.32h ("134h 19m"), 0.08h less. 134.4 is not reachable from
-  // targetUtilization 73 and capacity 184 by any multiplication (134.4/184 is
-  // 73.04%). It IS reachable two ways we cannot tell apart from one
-  // observation: Sphere360 rounding the target to one decimal in DAYS before
-  // converting back (23 x 0.73 = 16.79 -> 16.8 -> 134.4), or the stored
-  // targetUtilization actually being 73.04 and displayed rounded to 73%. This
-  // keeps the multiplication, because it is the rule the API's own field
-  // states and because a real 73.04 would then produce 134.4 unaided —
-  // whereas a rounding rule invented here would be wrong for every operator
-  // whose utilisation is not 73.
-  const targetHours = targetPercent === null ? null : round2(targetPercent / 100 * capacityHours);
+  // TARGET is rounded to ONE DECIMAL IN DAYS and only then converted to hours.
+  // Not the other way round, and not a display artefact — the rounding place is
+  // load-bearing, and it was derived from the operator's live card:
+  //
+  //   raw target days     0.73 x 23       = 16.79
+  //   round to 1 decimal  round(16.79, 1) = 16.8    -> card renders "16.80 days"
+  //   target hours        16.8 x 8        = 134.4   -> card renders "134h 24m"
+  //
+  // All three roundings were checked against that card and only 1dp reproduces
+  // it: 0dp gives 17.0 days / 136h 00m, and 2dp gives 16.79 days / 134h 19m.
+  // The unrounded product (targetPercent / 100 * capacityHours) gives 134.32h,
+  // which is what this module shipped first and what put it five minutes below
+  // the dashboard it exists to mirror, on every cycle.
+  //
+  // So do NOT "simplify" the rounding away, and do not compute targetHours
+  // directly from capacityHours: targetDays is the primary figure and
+  // targetHours is derived from it. The card's own "16.80 days" is a
+  // two-decimal rendering of a one-decimal value — that is Sphere360's
+  // formatting, not a second rounding, so targetDays is returned in its own
+  // right rather than left for the UI to divide back out of targetHours (which
+  // would reintroduce exactly the unrounded value this removes).
+  const targetDays = targetPercent === null
+    ? null
+    : Math.round((targetPercent / 100) * workingDays * 10) / 10;
+  const targetHours = targetDays === null ? null : round2(targetDays * dailyHours);
 
   const billedHours = round2(ok.reduce((sum, w) => sum + billedHoursIn(w.entries ?? [], start, end), 0));
 
@@ -107,6 +119,7 @@ function summarizeCycle({ cycle, today, weeks = [], mapping }) {
     dailyHoursSource,
     capacityHours,
     targetPercent,
+    targetDays,
     targetHours,
     billedHours,
     // Sphere360's own "days" unit: hours over one day's capacity, never over 24.

@@ -293,13 +293,18 @@ export function TimesheetWeek({ open, onOpenChange }: Props) {
                   {/* An em dash, never an invented number: no week in this
                       cycle stated a utilisation target, and a made-up one is a
                       figure the operator could be judged against. */}
-                  {progress.targetHours === null ? (
+                  {progress.targetHours === null || progress.targetDays === null ? (
                     <span className="text-muted-foreground">—</span>
                   ) : (
                     <>
                       <span className="font-medium">{formatHours(progress.targetHours)}</span>{' '}
                       <span className="text-xs text-muted-foreground">
-                        ({formatDays(progress.targetHours / progress.dailyHours)} days)
+                        {/* The server's own targetDays, never
+                            targetHours/dailyHours: Sphere360 rounds the target
+                            to one decimal in DAYS before converting, and
+                            dividing back out here would undo that and render
+                            16.79 where the card says 16.80. */}
+                        ({formatDays(progress.targetDays)} days)
                       </span>
                     </>
                   )}

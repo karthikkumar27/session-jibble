@@ -170,6 +170,12 @@ export interface CycleResponse {
   // default for a utilisation target, and inventing one would show the operator
   // a figure Sphere360 never stated.
   targetPercent: number | null;
+  // Rounded to ONE decimal by Sphere360 before it becomes hours (0.73 x 23 =
+  // 16.79 -> 16.8 -> 134.4h). Render it `.toFixed(2)` — the card's "16.80
+  // days" is a two-decimal rendering of a one-decimal value, which is its
+  // formatting, not a mistake. Never re-derive it as targetHours/dailyHours:
+  // that puts the unrounded value back.
+  targetDays: number | null;
   targetHours: number | null;
   billedHours: number;          // filed AND billable only
   billableDays: number;

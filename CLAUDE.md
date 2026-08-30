@@ -200,13 +200,19 @@ and `weekErrors` names the rest, which the UI reports as partial.
 already filed — it is not work outstanding, and the field name and UI copy must
 keep saying so. Never add it to `billedHours`.
 
+TARGET is rounded to **one decimal in days** before it becomes hours, and the
+rounding place is load-bearing: `0.73 x 23 = 16.79 -> 16.8 -> 134.4h`, which is
+the card's "16.80 days" and "134h 24m". The unrounded product is 134.32h
+("134h 19m") and 0dp gives 136h — only 1dp reproduces the card. `targetDays` is
+therefore the primary figure and `targetHours` derives from it; the UI renders
+the server's `targetDays`, never `targetHours / dailyHours`, which would put the
+unrounded value straight back. The two-decimal "16.80" is Sphere360 formatting a
+one-decimal value, not a second rounding.
+
 All the arithmetic lives in `lib/sphere360/progress.js`, not in the route: route
 wiring has no test harness here, so anything computed inline is unchecked.
 `sphere360-progress.test.js`'s fixture is the operator's real card, so every
-figure is asserted against a number Sphere360 actually printed. One known
-discrepancy is documented at the assertion: 73% x 184h is 134.32h where the card
-renders 134h 24m (134.4h), which is unreachable from those inputs by
-multiplication — the plain product is kept rather than an invented rounding rule.
+figure is asserted against a number Sphere360 actually printed.
 
 `SPHERE360_TOKEN` lives in `backend/.env` (gitignored). `lib/sphere360/token.js`
 re-reads that file from disk on every call — cached on its mtime/size, so an

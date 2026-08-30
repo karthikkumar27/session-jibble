@@ -47,16 +47,12 @@ test('reproduces every figure on the live billable-progress card', () => {
   assert.equal(s.dailyHoursSource, 'sphere360');
   assert.equal(s.capacityHours, 184);
   assert.equal(s.targetPercent, 73);
-  // 73% of 184 is 134.32, which renders as "134h 19m" — the live card renders
-  // "134h 24m" (= 134.4 = 16.8 days), 0.08h more. 134.4 is not reachable from
-  // targetUtilization 73 and capacity 184 by any multiplication: 134.4/184 is
-  // 73.04%. It IS reachable by rounding the target to one decimal in DAYS
-  // first (23 x 0.73 = 16.79 -> 16.8 -> 134.4), or by targetUtilization being
-  // 73.04 and displayed rounded. One observation cannot tell those apart, so
-  // this keeps the plain documented product and does not invent a rounding
-  // rule — a real targetUtilization of 73.04 would then produce 134.4 on its
-  // own. See the note in progress.js.
-  assert.equal(s.targetHours, 134.32);
+  // 134.4h renders "134h 24m", and 134.4/8 = 16.8 days renders "16.80 days" —
+  // both exactly as the card does. It is NOT 73% of 184 (that is 134.32,
+  // "134h 19m"): the target is rounded to one decimal in DAYS first. See the
+  // derivation in progress.js.
+  assert.equal(s.targetHours, 134.4);
+  assert.equal(s.targetDays, 16.8);
   assert.equal(s.billedHours, 13);
   assert.equal(s.billableDays, 1.63);
   assert.equal(s.actualPercent, 7.1);
@@ -137,6 +133,7 @@ test('falls back to the mapping\'s daily minimum, and says so, when no week has 
   // number on the card that Sphere360 never said.
   assert.equal(s.targetPercent, null);
   assert.equal(s.targetHours, null);
+  assert.equal(s.targetDays, null);
 });
 
 test('takes the resource from whichever week actually has one', () => {
@@ -161,7 +158,7 @@ test('billableDays and actualPercent divide by the cycle\'s own capacity', () =>
   const s = summary();
   assert.equal(s.billableDays, 1.63);
   assert.equal(s.actualPercent, 7.1);
-  assert.equal(parseFloat((s.targetHours / s.dailyHours).toFixed(2)), 16.79);
+  assert.equal(parseFloat((s.targetHours / s.dailyHours).toFixed(2)), 16.80);
 });
 
 test('isBillableEntry trusts the row\'s own flag over the nested activity', () => {
@@ -184,4 +181,34 @@ test('ignores an unusable hours value instead of poisoning the total with NaN', 
   });
   assert.equal(s.billedHours, 7);
   assert.equal(s.actualPercent, 3.8);
+});
+
+test('rounds the target to one decimal in DAYS, then multiplies by the daily hours', () => {
+  // The exact observed case, from the operator's own live card:
+  // workingDays 23, targetUtilization 73%, dailyHours 8.
+  //
+  //   raw target days     0.73 x 23       = 16.79
+  //   round to 1 decimal  round(16.79, 1) = 16.8    -> card shows "16.80 days"
+  //   target hours        16.8 x 8        = 134.4   -> card shows "134h 24m"
+  //
+  // The rounding place is not a matter of taste — only 1dp reproduces the
+  // card. The other two were checked against it and rejected:
+  //   0dp -> 17.0  days = 136h 00m   (no)
+  //   2dp -> 16.79 days = 134h 19m   (no)
+  // So the 1dp step is the RULE, not a display artefact of one. Deriving
+  // hours from the unrounded product instead — targetPercent/100 x
+  // capacityHours — gives 134.32 and puts this app 5 minutes below the
+  // dashboard it exists to mirror, on every cycle.
+  const s = summary();
+  assert.equal(s.targetDays, 16.8);
+  assert.equal(s.targetHours, 134.4);
+});
+
+test('the rounded target days survive as the figure the card renders', () => {
+  // targetDays is returned in its own right rather than left for the UI to
+  // divide back out of targetHours: a UI-side targetHours/dailyHours would
+  // reintroduce the unrounded value the rounding just removed.
+  const s = summary();
+  assert.equal(s.targetDays.toFixed(2), '16.80');
+  assert.equal(parseFloat((s.targetHours / s.dailyHours).toFixed(2)), 16.80);
 });
