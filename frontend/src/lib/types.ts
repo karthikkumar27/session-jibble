@@ -89,11 +89,14 @@ export interface TimesheetEntry {
 
 export interface DayTotals {
   date: string;
-  isWorkday: boolean;  // false for Sat/Sun — the floor is a working-day concept
+  // false for Sat/Sun AND for a configured holiday — the floor is an
+  // obligation concept, and neither day carries one, even Mon-Fri.
+  isWorkday: boolean;
+  isHoliday: boolean;  // true only for a date in the mapping's holiday list
   filedHours: number;
   draftedHours: number;
   totalHours: number;
-  shortBy: number;     // positive = below the floor; always 0 on a non-workday
+  shortBy: number;     // positive = below the floor; always 0 when !isWorkday
 }
 
 export interface UnmappedFolder {
@@ -132,7 +135,8 @@ export interface WeekResponse {
   replacedKeys: string[];
   unmapped: UnmappedFolder[];
   byDay: DayTotals[];
-  dailyMinimumHours: number;
+  dailyMinimumHours: number;   // the effective value in use — see dailyMinimumSource
+  dailyMinimumSource: 'sphere360' | 'config';
   resourceId: string;
   mappingConfigured: boolean;
   mappingError: string | null;

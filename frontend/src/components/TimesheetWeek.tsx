@@ -176,7 +176,13 @@ export function TimesheetWeek({ open, onOpenChange }: Props) {
   const weekLogged = data
     ? parseFloat(data.dates.reduce((s, d) => s + dayTotal(d), 0).toFixed(2))
     : 0;
-  const weekFloor = data ? data.dailyMinimumHours * 5 : 0;
+  // Only obligated days carry a floor: a week with one holiday is a 4-day
+  // floor, not the flat 5 the constant used to assume. Counted from byDay's
+  // own isWorkday, which already folds in both weekends and holidays, rather
+  // than re-deriving either rule here.
+  const weekFloor = data
+    ? parseFloat((data.byDay.filter(d => d.isWorkday).length * data.dailyMinimumHours).toFixed(2))
+    : 0;
   const weekShort = parseFloat(Math.max(0, weekFloor - weekLogged).toFixed(2));
 
   return (
@@ -241,7 +247,9 @@ export function TimesheetWeek({ open, onOpenChange }: Props) {
           // freezes hours, comments and Confirm.
           const myRows = Object.entries(edits).filter(([, e]) => e.workDate === date);
           const total = dayTotal(date);
-          const isWorkday = data.byDay.find(d => d.date === date)?.isWorkday ?? true;
+          const dayInfo = data.byDay.find(d => d.date === date);
+          const isWorkday = dayInfo?.isWorkday ?? true;
+          const isHoliday = dayInfo?.isHoliday ?? false;
           const short = isWorkday
             ? parseFloat(Math.max(0, data.dailyMinimumHours - total).toFixed(2))
             : 0;
@@ -250,8 +258,12 @@ export function TimesheetWeek({ open, onOpenChange }: Props) {
             <div key={date} className="rounded-lg border p-3">
               <div className="flex items-baseline justify-between">
                 <span className="font-medium">{dayLabel(date)}</span>
+                {/* Only an obligated day names a minimum. A holiday is labelled
+                    instead — "minimum 8h" on a gazetted day off would be
+                    misleading, not just unmet. A weekend that is not also a
+                    holiday shows neither: it already carries no obligation. */}
                 <span className="text-xs text-muted-foreground">
-                  minimum {data.dailyMinimumHours}h
+                  {isHoliday ? 'holiday' : isWorkday ? `minimum ${data.dailyMinimumHours}h` : null}
                 </span>
               </div>
 
