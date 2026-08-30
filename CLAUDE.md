@@ -63,6 +63,9 @@ Vite proxies `/api/*` → `http://localhost:8089` so the frontend always calls `
 | GET | `/api/config` | Category rules, with `source` and any load error |
 | PUT | `/api/config` | Validate and atomically save category rules |
 | GET | `/api/projects` | Distinct project folders with resolved category and all-time hours |
+| GET | `/api/sphere360/week` | The week merged in preview: filed, drafted, day totals. Writes nothing |
+| POST | `/api/sphere360/week` | Files the union of filed + drafted for one week |
+| GET | `/api/sphere360/cycle` | The billable-progress card for the 26th-to-25th cycle a date falls in |
 
 ## Data sources (all from `~/.claude/`)
 
@@ -172,6 +175,38 @@ Drafted hours are **uncorrected**: `docs/billing-accuracy-plan.md` measures the
 current engine ~25% high, and those corrections have not landed. `draft.js` takes
 hours through an injected `hoursFor()`, so the corrected engine drops in without
 touching the sync. The UI labels every drafted row until then.
+
+#### The billable-progress card (the 26th-to-25th cycle)
+`GET /api/sphere360/cycle` reproduces Sphere360's own "MY BILLABLE PROGRESS"
+card. The period is **not** a calendar month: it runs the 26th of one month to
+the 25th of the next and is addressed by the month it ENDS in
+(`lib/sphere360/cycle.js`). The same product's capacity-planning endpoint speaks
+calendar months instead, and the two disagree — it reports 22 working days for
+September where the timesheet cycle has 23 — so `client.fetchPlanVsActual` takes
+only that endpoint's allocations and drops its `workingDays` entirely.
+
+Working days are plain Mon-Fri with **no holiday deduction**, the same call
+`byDay` makes and for the same reason: Sphere360's 73% target utilisation is the
+slack that already absorbs holidays and leave.
+
+BILLED counts only filed rows where `isBillable` is true — the operator's
+non-billable social row is why 8.00h filed reads as 7h.
+
+Five weeks are fetched in **parallel** and caught **individually**: one expired
+token must not blank the card, so the totals come from the weeks that succeeded
+and `weekErrors` names the rest, which the UI reports as partial.
+
+`measuredHours` is what this app measured over the cycle and **overlaps** what is
+already filed — it is not work outstanding, and the field name and UI copy must
+keep saying so. Never add it to `billedHours`.
+
+All the arithmetic lives in `lib/sphere360/progress.js`, not in the route: route
+wiring has no test harness here, so anything computed inline is unchecked.
+`sphere360-progress.test.js`'s fixture is the operator's real card, so every
+figure is asserted against a number Sphere360 actually printed. One known
+discrepancy is documented at the assertion: 73% x 184h is 134.32h where the card
+renders 134h 24m (134.4h), which is unreachable from those inputs by
+multiplication — the plain product is kept rather than an invented rounding rule.
 
 `SPHERE360_TOKEN` lives in `backend/.env` (gitignored). `lib/sphere360/token.js`
 re-reads that file from disk on every call — cached on its mtime/size, so an
