@@ -323,3 +323,137 @@ test('normalisation leaves every other field on a filed row untouched', async ()
     assert.deepEqual(entries[0], { ...filedEntry, workDate: '2026-08-26' });
   });
 });
+
+// --- plan-vs-actual (capacity planning) --------------------------------------
+// GET /api/capacity-planning/plan-vs-actual?from=<key>&to=<key> returns the
+// mandays planned per project per CALENDAR month. Its `months[].workingDays`
+// is deliberately dropped: it counts calendar September (22) while the
+// timesheet cycle 26 Aug - 25 Sep has 23. Two period models in one product —
+// only the allocations are taken, and cycle.js computes the days.
+
+const planBody = {
+  from: '2026-09',
+  to: '2026-09',
+  months: [{ key: '2026-09', label: 'Sep', workingDays: 22 }],
+  allocations: [{
+    projectId: '1804361',
+    projectCode: 'TRIP-1043',
+    project: 'TRIP-1043 SkyIQ 2.0 AIMS Replacement',
+    projectStatus: 'ACTIVE',
+    portfolioMandays: 149.7,
+    months: [17],
+  }],
+};
+
+test('fetchPlanVsActual queries the single month both ways and returns its allocations', async () => {
+  await withToken('tok', async () => {
+    let seen;
+    const client = createClient({
+      fetchImpl: async (url, init) => { seen = { url, init }; return ok(planBody)(); },
+    });
+    const { allocations } = await client.fetchPlanVsActual('2026-09');
+    assert.match(seen.url, /\/api\/capacity-planning\/plan-vs-actual\?from=2026-09&to=2026-09$/);
+    assert.equal(seen.init.method, 'GET');
+    assert.equal(seen.init.headers.authorization, 'Bearer tok');
+    assert.deepEqual(allocations, [{
+      projectId: '1804361',
+      projectCode: 'TRIP-1043',
+      project: 'TRIP-1043 SkyIQ 2.0 AIMS Replacement',
+      projectStatus: 'ACTIVE',
+      plannedMandays: 17,
+    }]);
+  });
+});
+
+test('fetchPlanVsActual does not carry the endpoint\'s own workingDays through', async () => {
+  // 22 is calendar September. Letting it reach the card would contradict the
+  // 23 the cycle actually has, on the same screen.
+  await withToken('tok', async () => {
+    const client = createClient({ fetchImpl: async () => ok(planBody)() });
+    const result = await client.fetchPlanVsActual('2026-09');
+    assert.deepEqual(Object.keys(result), ['allocations']);
+    assert.ok(!JSON.stringify(result).includes('22'));
+    assert.ok(!JSON.stringify(result).includes('workingDays'));
+  });
+});
+
+test('fetchPlanVsActual drops allocations planned at zero', async () => {
+  // Every project the operator has ever touched is listed; the ones with no
+  // plan this month are noise on a card meant to show what is committed.
+  await withToken('tok', async () => {
+    const client = createClient({
+      fetchImpl: async () => ok({
+        ...planBody,
+        allocations: [
+          { ...planBody.allocations[0], months: [0] },
+          { ...planBody.allocations[0], projectCode: 'TRIP-1102', months: [4.5] },
+        ],
+      })(),
+    });
+    const { allocations } = await client.fetchPlanVsActual('2026-09');
+    assert.deepEqual(allocations.map(a => [a.projectCode, a.plannedMandays]), [['TRIP-1102', 4.5]]);
+  });
+});
+
+test('fetchPlanVsActual reads the month column, not the portfolio total', async () => {
+  // portfolioMandays (149.7) is the whole project's allocation across every
+  // month. Reporting it as this cycle's plan overstates it nearly tenfold.
+  await withToken('tok', async () => {
+    const client = createClient({ fetchImpl: async () => ok(planBody)() });
+    const { allocations } = await client.fetchPlanVsActual('2026-09');
+    assert.equal(allocations[0].plannedMandays, 17);
+  });
+});
+
+test('fetchPlanVsActual refuses a body with no allocations array', async () => {
+  // Same discipline as unwrapWeek: an unrecognised body must not read as
+  // "nothing is planned". A silent empty list here shows an operator with a
+  // 17-manday commitment a card that says they have none.
+  await withToken('tok', async () => {
+    for (const body of [null, 'nope', { months: [] }, { allocations: { 0: {} } }]) {
+      const client = createClient({ fetchImpl: async () => ok(body)() });
+      await assert.rejects(() => client.fetchPlanVsActual('2026-09'),
+        (e) => e.code === 'SHAPE', `body ${JSON.stringify(body)} must be refused`);
+    }
+  });
+});
+
+test('fetchPlanVsActual refuses a body carrying more than the one month asked for', async () => {
+  // months[i] in an allocation is parallel to the top-level months array. If
+  // the API ever ignores the query or widens the range, months[0] is some
+  // other month's plan — and it would be indistinguishable from the right
+  // answer on the card.
+  await withToken('tok', async () => {
+    const client = createClient({
+      fetchImpl: async () => ok({
+        ...planBody,
+        months: [{ key: '2026-08' }, { key: '2026-09' }],
+        allocations: [{ ...planBody.allocations[0], months: [3, 17] }],
+      })(),
+    });
+    await assert.rejects(() => client.fetchPlanVsActual('2026-09'), (e) => e.code === 'SHAPE');
+  });
+});
+
+test('fetchPlanVsActual refuses an allocation whose month value is not a number', async () => {
+  await withToken('tok', async () => {
+    for (const months of [undefined, [], ['17'], [null], {}]) {
+      const client = createClient({
+        fetchImpl: async () => ok({ ...planBody, allocations: [{ ...planBody.allocations[0], months }] })(),
+      });
+      await assert.rejects(() => client.fetchPlanVsActual('2026-09'),
+        (e) => e.code === 'SHAPE', `months ${JSON.stringify(months)} must be refused`);
+    }
+  });
+});
+
+test('fetchPlanVsActual maps 401 and refuses to call with no token, like every other call', async () => {
+  await withToken(null, async () => {
+    const client = createClient({ fetchImpl: () => { throw new Error('must not be called'); } });
+    await assert.rejects(() => client.fetchPlanVsActual('2026-09'), (e) => e.code === 'NO_TOKEN');
+  });
+  await withToken('stale', async () => {
+    const client = createClient({ fetchImpl: async () => ({ ok: false, status: 401, text: async () => '' }) });
+    await assert.rejects(() => client.fetchPlanVsActual('2026-09'), (e) => e.code === 'AUTH');
+  });
+});

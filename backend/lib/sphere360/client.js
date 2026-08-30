@@ -17,6 +17,7 @@ const BASE_URL = 'https://sphere360.airasia.com';
 // Update these two if Task 1's probe observed different paths.
 const WEEK_PATH = '/api/timesheets';
 const UPSERT_PATH = '/api/timesheets/upsert';
+const PLAN_PATH = '/api/capacity-planning/plan-vs-actual';
 
 function fail(code, message, status) {
   const err = new Error(message);
@@ -99,6 +100,57 @@ function unwrapWeek(body) {
   throw fail('SHAPE', 'Sphere360 returned a week in an unrecognised shape; refusing to treat it as empty');
 }
 
+// The capacity-planning endpoint, which answers "how many mandays is this
+// person planned for on each project this month".
+//
+// It speaks CALENDAR months — its own months[].workingDays reports 22 for
+// September while the timesheet cycle 26 Aug - 25 Sep has 23. That field is
+// dropped here rather than passed on: two working-day counts on one card is a
+// contradiction the operator cannot resolve, and cycle.js computes the one
+// that matches the timesheet. Only the allocations survive.
+//
+// months[i] inside an allocation is positional against the top-level months
+// array, so a single-month query puts this month's plan at months[0]. If the
+// body ever carries more than the one month asked for — a widened range, an
+// ignored query — months[0] is some OTHER month's figure and is
+// indistinguishable from the right answer once rendered. That is refused, not
+// guessed at, exactly as unwrapWeek refuses two week wrappers.
+//
+// An unrecognised body throws SHAPE rather than yielding an empty list, for
+// the same reason an unparseable week is not "nothing filed": an operator with
+// a 17-manday commitment would be shown a card saying they have none.
+function unwrapPlan(body) {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    throw fail('SHAPE', 'Sphere360 returned a plan-vs-actual body in an unrecognised shape');
+  }
+  if (!Array.isArray(body.allocations)) {
+    throw fail('SHAPE', 'Sphere360 returned a plan-vs-actual body with no allocations array');
+  }
+  if (Array.isArray(body.months) && body.months.length > 1) {
+    throw fail('SHAPE', `Sphere360 returned ${body.months.length} months for a single-month plan query; refusing to guess which column is this cycle's`);
+  }
+
+  const allocations = [];
+  for (const a of body.allocations) {
+    const planned = Array.isArray(a?.months) ? a.months[0] : undefined;
+    if (typeof planned !== 'number' || !Number.isFinite(planned)) {
+      throw fail('SHAPE', `Sphere360 returned an allocation with an unreadable month value: ${JSON.stringify(a?.months)}`);
+    }
+    // portfolioMandays is the project's whole-life allocation (149.7 observed)
+    // and is NOT this month's plan; taking it would overstate the commitment
+    // nearly tenfold. Only the month column is read.
+    if (planned === 0) continue;     // listed but not planned this month
+    allocations.push({
+      projectId: a.projectId,
+      projectCode: a.projectCode,
+      project: a.project,
+      projectStatus: a.projectStatus,
+      plannedMandays: planned,
+    });
+  }
+  return { allocations };
+}
+
 function createClient({ fetchImpl = globalThis.fetch, baseUrl = BASE_URL } = {}) {
   const headers = () => ({
     authorization: `Bearer ${readToken()}`,
@@ -113,6 +165,17 @@ function createClient({ fetchImpl = globalThis.fetch, baseUrl = BASE_URL } = {})
       const res = await fetchImpl(url, { method: 'GET', headers: h });
       await assertOk(res);
       return unwrapWeek(await res.json());
+    },
+
+    // -> { allocations: [{ projectId, projectCode, project, projectStatus, plannedMandays }] }
+    // Read-only, and queried for exactly one month at a time so months[0] is
+    // unambiguous.
+    async fetchPlanVsActual(monthKey) {
+      const h = headers();
+      const key = encodeURIComponent(monthKey);
+      const res = await fetchImpl(`${baseUrl}${PLAN_PATH}?from=${key}&to=${key}`, { method: 'GET', headers: h });
+      await assertOk(res);
+      return unwrapPlan(await res.json());
     },
 
     // No retry, ever. This endpoint replaces a week; a retried POST after an
